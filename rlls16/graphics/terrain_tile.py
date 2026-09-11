@@ -214,15 +214,160 @@ def build_tile_mesh_data(
     return all_vertices, np.array(indices, dtype=np.uint32)
 
 
+def build_tile_vegetation_instances(
+    node,
+    world_data: dict,
+    radius: float = 5.0,
+    grid_size: int = 16,
+) -> np.ndarray | None:
+    """
+    Deterministically scatter 15-40 tree instances for forest/taiga/rainforest tiles (LOD >= 4).
+    Returns array of shape (N, 8): [x, y, z, scale, species_type, nx, ny, nz].
+    """
+    if node.level < 4 or "land_mask" not in world_data:
+        return None
+
+    u_vals = np.linspace(node.u_min, node.u_max, grid_size, dtype=np.float32)
+    v_vals = np.linspace(node.v_min, node.v_max, grid_size, dtype=np.float32)
+    u_grid, v_grid = np.meshgrid(u_vals, v_vals)
+
+    sphere_pts = cube_to_sphere(node.face, u_grid, v_grid)
+    lat, lon = sphere_to_latlon(sphere_pts)
+
+    land_mask = sample_canonical_field(world_data["land_mask"].astype(np.float32), lat, lon) > 0.5
+    if not np.any(land_mask):
+        return None
+
+    if "biome" in world_data:
+        biome_field = sample_canonical_field(world_data["biome"].astype(np.float32), lat, lon)
+    else:
+        biome_field = np.full_like(lat, 4.0)
+
+    # 4=forest, 5=rainforest, 6=taiga/tundra, 3=grassland
+    veg_mask = land_mask & ((biome_field >= 3.0) & (biome_field <= 6.0))
+    valid_indices = np.argwhere(veg_mask)
+    if len(valid_indices) < 4:
+        return None
+
+    # Deterministic pseudo-random seed based on tile key
+    seed = (node.face * 1000003 + node.level * 50021 + int(abs(node.u_min * 10000)) * 31 + int(abs(node.v_min * 10000))) & 0x7fffffff
+    rng = np.random.RandomState(seed)
+
+    elev_field = sample_canonical_field(world_data["elevation"], lat, lon)
+    if np.issubdtype(elev_field.dtype, np.integer) or np.max(elev_field) > 1.5:
+        elev_field = elev_field.astype(np.float32) / 65535.0
+    displaced_radius = radius + (elev_field - 0.50) * 0.35
+    positions = sphere_pts * displaced_radius[..., None]
+
+    normals = sphere_pts.copy()
+
+    num_trees = min(len(valid_indices), rng.randint(18, 38))
+    chosen = rng.choice(len(valid_indices), size=num_trees, replace=False)
+
+    instances = []
+    for idx in chosen:
+        gy, gx = valid_indices[idx]
+        p = positions[gy, gx]
+        n = normals[gy, gx]
+        b = int(biome_field[gy, gx])
+
+        if b == 5:
+            sp = 2.0  # Rainforest
+            sc = float(rng.uniform(0.004, 0.007))
+        elif b == 6:
+            sp = 1.0  # Taiga / Conifer
+            sc = float(rng.uniform(0.0028, 0.0048))
+        else:
+            sp = 0.0  # Temperate broadleaf
+            sc = float(rng.uniform(0.0035, 0.0055))
+
+        lod_scale_adj = 1.0 / math.sqrt(2 ** max(0, node.level - 4))
+        sc = max(0.0015, sc * lod_scale_adj)
+
+        instances.append([
+            float(p[0]), float(p[1]), float(p[2]),
+            sc, sp,
+            float(n[0]), float(n[1]), float(n[2])
+        ])
+
+    return np.array(instances, dtype=np.float32)
+
+
+def create_base_tree_mesh(ctx: moderngl.Context) -> tuple[moderngl.Buffer, moderngl.Buffer]:
+    """
+    Creates shared 3D tree mesh:
+    - 4-sided prism trunk (8 vertices, in_part=0.0)
+    - 2-tier pyramid canopy (10 vertices, in_part=1.0)
+    """
+    verts = []
+    r_trunk = 0.08
+    h_trunk = 0.35
+    for i in range(4):
+        ang = i * (math.pi / 2.0)
+        x = math.cos(ang) * r_trunk
+        z = math.sin(ang) * r_trunk
+        verts.append([x, 0.0, z, x, 0.0, z, 0.0])
+        verts.append([x, h_trunk, z, x, 0.0, z, 0.0])
+
+    indices = [
+        0, 1, 2,  2, 1, 3,
+        2, 3, 4,  4, 3, 5,
+        4, 5, 6,  6, 5, 7,
+        6, 7, 0,  0, 7, 1,
+    ]
+
+    base_idx = len(verts)
+    r_c1 = 0.40
+    h_b1 = 0.30
+    h_t1 = 0.85
+    for i in range(4):
+        ang = i * (math.pi / 2.0) + (math.pi / 4.0)
+        x = math.cos(ang) * r_c1
+        z = math.sin(ang) * r_c1
+        verts.append([x, h_b1, z, x * 0.7, 0.5, z * 0.7, 1.0])
+    verts.append([0.0, h_t1, 0.0, 0.0, 1.0, 0.0, 1.0])
+    apex1 = base_idx + 4
+
+    for i in range(4):
+        indices.extend([base_idx + i, base_idx + ((i + 1) % 4), apex1])
+
+    base_idx2 = len(verts)
+    r_c2 = 0.28
+    h_b2 = 0.65
+    h_t2 = 1.20
+    for i in range(4):
+        ang = i * (math.pi / 2.0)
+        x = math.cos(ang) * r_c2
+        z = math.sin(ang) * r_c2
+        verts.append([x, h_b2, z, x * 0.7, 0.5, z * 0.7, 1.0])
+    verts.append([0.0, h_t2, 0.0, 0.0, 1.0, 0.0, 1.0])
+    apex2 = base_idx2 + 4
+
+    for i in range(4):
+        indices.extend([base_idx2 + i, base_idx2 + ((i + 1) % 4), apex2])
+
+    vbo = ctx.buffer(np.array(verts, dtype=np.float32).tobytes())
+    ibo = ctx.buffer(np.array(indices, dtype=np.uint32).tobytes())
+    return vbo, ibo
+
+
 class TerrainTile:
-    """Represents an active GPU-buffered terrain tile with support for buffer reuse."""
-    __slots__ = ('node_key', 'vbo', 'ibo', 'vao', 'vertex_count', 'index_count', 'last_used_frame')
+    """Represents an active GPU-buffered terrain tile with support for buffer reuse and instanced vegetation."""
+    __slots__ = (
+        'node_key', 'vbo', 'ibo', 'vao', 'vertex_count', 'index_count', 'last_used_frame',
+        'veg_instances', 'veg_vbo', 'veg_vao', 'veg_count'
+    )
 
     def __init__(self, ctx: moderngl.Context, prog: moderngl.Program, vertices: np.ndarray, indices: np.ndarray, key: str):
         self.node_key = key
         self.last_used_frame = 0
         self.vertex_count = len(vertices)
         self.index_count = len(indices)
+
+        self.veg_instances = None
+        self.veg_vbo = None
+        self.veg_vao = None
+        self.veg_count = 0
 
         self.vbo = ctx.buffer(vertices.tobytes())
         self.ibo = ctx.buffer(indices.tobytes())
@@ -236,12 +381,58 @@ class TerrainTile:
             index_element_size=4,
         )
 
+    def setup_vegetation(
+        self,
+        ctx: moderngl.Context,
+        prog_veg: moderngl.Program,
+        base_tree_vbo: moderngl.Buffer,
+        base_tree_ibo: moderngl.Buffer,
+        instances: np.ndarray | None,
+    ):
+        """Builds hardware-instanced VAO for this tile's vegetation."""
+        if instances is None or len(instances) == 0:
+            return
+        self.veg_instances = instances
+        self.veg_count = len(instances)
+        if self.veg_vbo is not None:
+            try: self.veg_vbo.release()
+            except Exception: pass
+        self.veg_vbo = ctx.buffer(instances.tobytes())
+        if self.veg_vao is not None:
+            try: self.veg_vao.release()
+            except Exception: pass
+        self.veg_vao = ctx.vertex_array(
+            prog_veg,
+            [
+                (base_tree_vbo, '3f 3f 1f', 'in_position', 'in_normal', 'in_part'),
+                (self.veg_vbo, '3f 1f 1f 3f /i', 'in_inst_pos', 'in_inst_scale', 'in_inst_type', 'in_inst_normal'),
+            ],
+            index_buffer=base_tree_ibo,
+            index_element_size=4,
+        )
+
+    def render_vegetation(self):
+        """Draw all instanced trees on this tile in a single draw call."""
+        if self.veg_vao is not None and self.veg_count > 0:
+            self.veg_vao.render(instances=self.veg_count)
+
     def update_data(self, vertices: np.ndarray, indices: np.ndarray, key: str):
         """Reuse existing GPU buffer without reallocation if sizes match."""
         self.node_key = key
         self.last_used_frame = 0
         self.vertex_count = len(vertices)
         self.index_count = len(indices)
+
+        if self.veg_vao is not None:
+            try: self.veg_vao.release()
+            except Exception: pass
+            self.veg_vao = None
+        if self.veg_vbo is not None:
+            try: self.veg_vbo.release()
+            except Exception: pass
+            self.veg_vbo = None
+        self.veg_instances = None
+        self.veg_count = 0
 
         v_bytes = vertices.tobytes()
         if len(v_bytes) == self.vbo.size:
@@ -259,6 +450,10 @@ class TerrainTile:
 
     def release(self):
         try:
+            if self.veg_vao is not None:
+                self.veg_vao.release()
+            if self.veg_vbo is not None:
+                self.veg_vbo.release()
             self.vao.release()
             self.vbo.release()
             self.ibo.release()
@@ -292,12 +487,23 @@ class TerrainTilePool:
         self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="TerrainChunkWorker")
         self.current_frame = 0
 
+        # Vegetation instancing program and shared tree mesh
+        self.prog_vegetation = None
+        self.base_tree_vbo = None
+        self.base_tree_ibo = None
+
         # Telemetry metrics
         self.cache_hits_gpu = 0
         self.cache_hits_cpu = 0
         self.reused_buffers_count = 0
         self.total_generated_count = 0
         self.frame_uploads = 0
+
+    def set_vegetation_program(self, prog_veg: moderngl.Program):
+        """Bind vegetation shader and build shared low-poly tree mesh."""
+        self.prog_vegetation = prog_veg
+        if self.base_tree_vbo is None:
+            self.base_tree_vbo, self.base_tree_ibo = create_base_tree_mesh(self.ctx)
 
     def _worker_build_mesh(self, node, world_data: dict, grid_size: int, radius: float):
         try:
@@ -353,6 +559,7 @@ class TerrainTilePool:
 
     def get_or_create(self, node, world_data: dict, prog: moderngl.Program, radius: float = 5.0) -> TerrainTile | None:
         key = node.key
+        tile = None
 
         # 1. Hit in GPU cache (Tier 1 & 2)
         if key in self.gpu_cache:
@@ -360,10 +567,9 @@ class TerrainTilePool:
             tile.last_used_frame = self.current_frame
             self.gpu_cache.move_to_end(key)
             self.cache_hits_gpu += 1
-            return tile
 
         # 2. Hit in CPU RAM cache (Tier 3: zero regeneration!)
-        if key in self.cpu_cache:
+        elif key in self.cpu_cache:
             verts, indices = self.cpu_cache[key]
             while len(self.gpu_cache) >= self.max_gpu_cached:
                 self._evict_oldest_gpu_tile()
@@ -372,10 +578,9 @@ class TerrainTilePool:
             tile.last_used_frame = self.current_frame
             self.gpu_cache[key] = tile
             self.cache_hits_cpu += 1
-            return tile
 
         # 3. If LOD 0 (root tiles), generate synchronously to guarantee baseline rendering
-        if node.level == 0:
+        elif node.level == 0:
             verts, indices = build_tile_mesh_data(node, world_data, grid_size=16, radius=radius)
             self.total_generated_count += 1
             self.cpu_cache[key] = (verts, indices)
@@ -384,21 +589,36 @@ class TerrainTilePool:
             tile = self._acquire_or_create_tile(prog, verts, indices, key)
             tile.last_used_frame = self.current_frame
             self.gpu_cache[key] = tile
-            return tile
 
         # 4. Deep LOD -> enqueue to worker thread (asynchronous streaming)
-        if key not in self.pending_tasks:
-            self.pending_tasks.add(key)
-            self.total_generated_count += 1
-            self.executor.submit(self._worker_build_mesh, node, world_data, 16, radius)
+        else:
+            if key not in self.pending_tasks:
+                self.pending_tasks.add(key)
+                self.total_generated_count += 1
+                self.executor.submit(self._worker_build_mesh, node, world_data, 16, radius)
 
-        return None
+        # If tile is present and at deep LOD, setup deterministic vegetation instances
+        if tile is not None and node.level >= 4 and tile.veg_instances is None and self.prog_vegetation is not None:
+            veg_inst = build_tile_vegetation_instances(node, world_data, radius=radius)
+            if veg_inst is not None:
+                tile.setup_vegetation(self.ctx, self.prog_vegetation, self.base_tree_vbo, self.base_tree_ibo, veg_inst)
+
+        return tile
 
     def step_frame(self):
         self.current_frame += 1
 
     def release_all(self):
         self.executor.shutdown(wait=False)
+        if self.base_tree_vbo is not None:
+            try: self.base_tree_vbo.release()
+            except Exception: pass
+            self.base_tree_vbo = None
+        if self.base_tree_ibo is not None:
+            try: self.base_tree_ibo.release()
+            except Exception: pass
+            self.base_tree_ibo = None
+
         for tile in self.gpu_cache.values():
             tile.release()
         for tile in self.free_buffer_pool:

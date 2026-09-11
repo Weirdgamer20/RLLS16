@@ -121,6 +121,7 @@ in vec2 v_uv;
 
 uniform vec3 u_camera_pos;
 uniform vec3 u_sun_pos;
+uniform vec3 u_sun_dir;
 uniform sampler2D u_tex_albedo;
 uniform sampler2D u_tex_clouds;
 uniform float u_cloud_offset;
@@ -133,7 +134,10 @@ out vec4 frag_color;
 
 void main() {
     vec3 N = normalize(v_normal);
-    vec3 L = normalize(u_sun_pos - v_world_pos); // Direction to Sun
+    vec3 L = length(u_sun_dir) > 0.01 ? normalize(u_sun_dir) : normalize(u_sun_pos - v_world_pos);
+    if (dot(L, L) < 0.01) {
+        L = normalize(vec3(1.0, 0.25, 0.65));
+    }
     vec3 V = normalize(u_camera_pos - v_world_pos); // Direction to Camera
     vec3 H = normalize(L + V);
 
@@ -210,13 +214,17 @@ in vec3 v_normal;
 in vec2 v_uv;
 
 uniform vec3 u_sun_pos;
+uniform vec3 u_sun_dir;
 uniform sampler2D u_tex_lunar;
 
 out vec4 frag_color;
 
 void main() {
     vec3 N = normalize(v_normal);
-    vec3 L = normalize(u_sun_pos - v_world_pos);
+    vec3 L = length(u_sun_dir) > 0.01 ? normalize(u_sun_dir) : normalize(u_sun_pos - v_world_pos);
+    if (dot(L, L) < 0.01) {
+        L = normalize(vec3(1.0, 0.25, 0.65));
+    }
     float NdotL = dot(N, L);
     float sun_light = smoothstep(-0.05, 0.08, NdotL);
     float ambient = 0.02;
@@ -314,6 +322,7 @@ in float v_land;
 
 uniform vec3 u_camera_pos;         // Camera position in world space
 uniform vec3 u_sun_pos;            // Sun position in world space
+uniform vec3 u_sun_dir;            // Direction vector to Sun (astronomical)
 uniform sampler2D u_tex_albedo;    // Canonical Earth albedo texture
 uniform sampler2D u_tex_clouds;    // Cloud texture
 uniform float u_cloud_offset;      // Cloud rotation offset
@@ -326,13 +335,17 @@ uniform float u_lod_level;         // Node LOD level for debug tint
 out vec4 frag_color;
 
 void main() {
+    vec3 N = normalize(v_normal);
+    vec3 L = length(u_sun_dir) > 0.01 ? normalize(u_sun_dir) : normalize(u_sun_pos - v_world_pos);
+    if (dot(L, L) < 0.01) {
+        L = normalize(vec3(1.0, 0.25, 0.65));
+    }
+
     // -------------------------------------------------------------
     // VISUAL DEBUG MODES (Point 44)
     // -------------------------------------------------------------
     if (u_debug_mode == 1) {
         // 1. Earth Solid (clean cyan-blue diagnostic surface)
-        vec3 N = normalize(v_normal);
-        vec3 L = normalize(u_sun_pos - v_world_pos);
         float diff = max(dot(N, L), 0.15);
         frag_color = vec4(vec3(0.12, 0.58, 0.88) * diff, 1.0);
         return;
@@ -363,7 +376,6 @@ void main() {
     }
     else if (u_debug_mode == 7) {
         // 7. Surface Normals
-        vec3 N = normalize(v_normal);
         frag_color = vec4(N * 0.5 + 0.5, 1.0);
         return;
     }
@@ -379,8 +391,6 @@ void main() {
             vec3(0.8, 0.2, 0.9)  // LOD 6: Magenta
         );
         int idx = clamp(int(u_lod_level), 0, 6);
-        vec3 N = normalize(v_normal);
-        vec3 L = normalize(u_sun_pos - v_world_pos);
         float diff = max(dot(N, L), 0.25);
         frag_color = vec4(lod_colors[idx] * diff, 1.0);
         return;
@@ -398,8 +408,6 @@ void main() {
     // -------------------------------------------------------------
     // FULL CANONICAL EARTH SHADING PIPELINE (Points 18, 19, 20)
     // -------------------------------------------------------------
-    vec3 N = normalize(v_normal);
-    vec3 L = normalize(u_sun_pos - v_world_pos);
     vec3 V = normalize(u_camera_pos - v_world_pos);
     vec3 H = normalize(L + V);
 
@@ -415,28 +423,25 @@ void main() {
     // -------------------------------------------------------------
     // INCREASING SPATIAL DETAIL AT DEEP ZOOM
     // -------------------------------------------------------------
-    float dist_to_cam = length(u_camera_pos - v_world_pos);
-    float detail_factor = clamp(1.0 - (dist_to_cam - 0.05) / 3.8, 0.0, 1.0);
+    float cam_dist = length(u_camera_pos - v_world_pos);
+    float detail_factor = clamp(1.0 - (cam_dist - 5.0) / 1.5, 0.0, 1.0);
 
-    if (detail_factor > 0.0) {
-        vec3 radial_norm = normalize(v_world_pos);
-        float slope = 1.0 - clamp(dot(N, radial_norm), 0.0, 1.0);
+    if (detail_factor > 0.01) {
+        // Slope-Aware Shading: Steeper slopes blend toward rocky cliff face
+        float slope = 1.0 - clamp(dot(N, normalize(v_world_pos)), 0.0, 1.0);
+        if (v_land > 0.5 && slope > 0.15) {
+            float cliff_blend = smoothstep(0.15, 0.45, slope) * detail_factor;
+            vec3 rock_color = vec3(0.38, 0.35, 0.32);
+            surface_color = mix(surface_color, rock_color, cliff_blend * 0.75);
+        }
 
+        // Procedural Micro-grain on land surface
         if (v_land > 0.5) {
-            // 1. Slope-aware rocky cliff striations on steep terrain
-            float rock_strata = sin(v_elev * 800.0 + sin(v_uv.x * 2000.0) * 0.5) * 0.5 + 0.5;
-            vec3 rock_col = mix(vec3(0.38, 0.35, 0.30), vec3(0.58, 0.55, 0.50), rock_strata);
-            float cliff_blend = smoothstep(0.08, 0.28, slope) * detail_factor;
-            surface_color = mix(surface_color, rock_col, cliff_blend);
-
-            // 2. High-frequency spatial micro-noise to prevent texture blur
-            vec2 micro_uv = v_uv * 2048.0;
-            float micro_grain = sin(micro_uv.x * 3.14 + sin(micro_uv.y * 4.2)) * cos(micro_uv.y * 3.14 + cos(micro_uv.x * 3.8));
-            surface_color *= (1.0 + micro_grain * 0.10 * detail_factor);
+            float grain = sin(v_world_pos.x * 650.0) * cos(v_world_pos.z * 650.0) * 0.035;
+            surface_color += vec3(grain * detail_factor);
         } else {
-            // 3. Ocean surface water micro-ripples
-            vec2 ocean_uv = v_uv * 4096.0;
-            float wave = sin(ocean_uv.x + u_cloud_offset * 120.0) * cos(ocean_uv.y + u_cloud_offset * 90.0);
+            // Procedural Micro-ripples on ocean surface
+            float wave = sin(v_world_pos.x * 400.0 + u_cloud_offset * 12.0) * cos(v_world_pos.z * 400.0) * 0.025;
             surface_color += vec3(0.02, 0.05, 0.09) * wave * detail_factor;
         }
     }
@@ -479,3 +484,101 @@ void main() {
 }
 """
 
+VEGETATION_VS = """
+#version 330 core
+layout(location = 0) in vec3 in_position;    // Local tree geometry (trunk + canopy)
+layout(location = 1) in vec3 in_normal;      // Local vertex normal
+layout(location = 2) in float in_part;       // 0.0 = trunk, 1.0 = foliage canopy
+
+// Per-instance attributes (hardware instanced)
+layout(location = 3) in vec3 in_inst_pos;    // World position on terrain surface
+layout(location = 4) in float in_inst_scale; // Tree scale
+layout(location = 5) in float in_inst_type;  // 0: broadleaf, 1: conifer, 2: rainforest
+layout(location = 6) in vec3 in_inst_normal; // Surface normal
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+uniform vec3 u_sun_pos;
+uniform vec3 u_sun_dir;
+uniform float u_time;
+
+out vec3 v_world_pos;
+out vec3 v_normal;
+out float v_part;
+out float v_type;
+
+void main() {
+    vec3 N = normalize(in_inst_normal);
+    // Build local orthonormal tangent frame aligned with planet surface normal
+    vec3 up_ref = abs(N.y) > 0.85 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 T = normalize(cross(up_ref, N));
+    vec3 B = cross(N, T);
+
+    // Subtle wind sway for foliage canopy
+    vec3 local_pos = in_position;
+    if (in_part > 0.5) {
+        float sway = sin(u_time * 2.5 + in_inst_pos.x * 20.0 + in_inst_pos.z * 20.0) * 0.08;
+        local_pos.x += sway * local_pos.y;
+        local_pos.z += sway * 0.7 * local_pos.y;
+    }
+
+    // Orient local tree mesh along surface normal
+    vec3 oriented_pos = (T * local_pos.x + N * local_pos.y + B * local_pos.z) * in_inst_scale;
+    vec3 world_pos = in_inst_pos + oriented_pos;
+
+    v_world_pos = world_pos;
+    v_normal = normalize(T * in_normal.x + N * in_normal.y + B * in_normal.z);
+    v_part = in_part;
+    v_type = in_inst_type;
+
+    gl_Position = u_proj * u_view * vec4(world_pos, 1.0);
+}
+"""
+
+VEGETATION_FS = """
+#version 330 core
+in vec3 v_world_pos;
+in vec3 v_normal;
+in float v_part;
+in float v_type;
+
+uniform vec3 u_camera_pos;
+uniform vec3 u_sun_pos;
+uniform vec3 u_sun_dir;
+uniform float u_solar_irradiance;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 N = normalize(v_normal);
+    vec3 L = length(u_sun_dir) > 0.01 ? normalize(u_sun_dir) : normalize(u_sun_pos - v_world_pos);
+    if (dot(L, L) < 0.01) {
+        L = normalize(vec3(1.0, 0.25, 0.65));
+    }
+
+    float NdotL = max(dot(N, L), 0.0);
+    float daylight = smoothstep(-0.05, 0.15, dot(N, L));
+    float ambient = 0.15;
+
+    vec3 base_color;
+    if (v_part < 0.5) {
+        // Tree trunk: woody bark
+        base_color = vec3(0.32, 0.21, 0.13);
+    } else {
+        // Foliage canopy colored by biome species
+        if (v_type < 0.5) {
+            // Temperate forest oak/broadleaf
+            base_color = vec3(0.18, 0.52, 0.20);
+        } else if (v_type < 1.5) {
+            // Taiga / Boreal spruce conifer
+            base_color = vec3(0.10, 0.38, 0.22);
+        } else {
+            // Tropical rainforest canopy
+            base_color = vec3(0.08, 0.58, 0.25);
+        }
+    }
+
+    vec3 final_color = base_color * (daylight * max(0.2, u_solar_irradiance) + ambient);
+    frag_color = vec4(final_color, 1.0);
+}
+"""

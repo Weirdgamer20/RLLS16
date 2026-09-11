@@ -285,3 +285,99 @@ def sample_terrain_altitude(lat: float, lon: float, world_data: dict, radius: fl
 
     return radius + (elev - 0.50) * terrain_amp
 
+
+def unproject_terrain_hit(
+    mouse_x: float,
+    mouse_y: float,
+    width: int,
+    height: int,
+    view_mat: np.ndarray,
+    proj_mat: np.ndarray,
+    earth_center: np.ndarray,
+    earth_radius: float = 5.0,
+    world_data: dict | None = None,
+    earth_rot_rad: float = 0.0,
+    axial_tilt_rad: float = math.radians(23.44),
+) -> tuple[np.ndarray, float, float] | None:
+    """
+    Raycast from screen coordinates to intersect Earth's displaced surface.
+    Returns:
+        (hit_point_world, lat_rad, lon_rad) or None if the ray misses Earth.
+    """
+    ray_origin, ray_dir = screen_to_ray(mouse_x, mouse_y, width, height, view_mat, proj_mat)
+    # 1. Base sphere intersection
+    # Use conservative radius (radius + max elevation amplitude)
+    max_r = earth_radius + 0.20
+    t = ray_sphere_intersect(ray_origin, ray_dir, earth_center, max_r)
+    if t is None or t <= 0:
+        return None
+
+    # Step along ray to find precise intersection point
+    hit_pos = ray_origin + ray_dir * t
+    # Refine hit point against displaced sphere
+    rel_hit = hit_pos - earth_center
+    dist_hit = np.linalg.norm(rel_hit)
+    if dist_hit < 1e-6:
+        return None
+    dir_hit = rel_hit / dist_hit
+
+    # Convert direction to Earth's local model coordinates factoring rotation & tilt
+    cz = math.cos(axial_tilt_rad)
+    sz = math.sin(axial_tilt_rad)
+    rx = cz * dir_hit[0] - sz * dir_hit[1]
+    ry = sz * dir_hit[0] + cz * dir_hit[1]
+    rz = dir_hit[2]
+
+    cy = math.cos(-earth_rot_rad)
+    sy = math.sin(-earth_rot_rad)
+    mx = cy * rx + sy * rz
+    my = ry
+    mz = -sy * rx + cy * rz
+
+    lat = math.asin(max(-1.0, min(1.0, my)))
+    lon = math.atan2(mx, mz)
+
+    if world_data is not None:
+        actual_r = sample_terrain_altitude(lat, lon, world_data, radius=earth_radius)
+    else:
+        actual_r = earth_radius
+
+    refined_hit = earth_center + dir_hit * actual_r
+    return refined_hit, lat, lon
+
+
+def compute_surface_tangent_basis(
+    focus_pos: np.ndarray,
+    earth_center: np.ndarray,
+    cam_forward: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute local surface tangent orthonormal basis:
+    - N: Surface normal pointing directly outward into space
+    - F_tan: Camera forward vector projected onto the local tangent plane
+    - R_tan: Tangent right vector (cross(N, F_tan))
+    """
+    diff = np.asarray(focus_pos, dtype=np.float32) - np.asarray(earth_center, dtype=np.float32)
+    norm_diff = np.linalg.norm(diff)
+    if norm_diff < 1e-6:
+        N = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    else:
+        N = normalize(diff)
+
+    fwd = normalize(np.asarray(cam_forward, dtype=np.float32))
+    # Project camera forward onto tangent plane: F - N * dot(F, N)
+    f_dot_n = float(np.dot(fwd, N))
+    f_tan = fwd - N * f_dot_n
+    norm_f_tan = np.linalg.norm(f_tan)
+
+    if norm_f_tan < 1e-4:
+        # Looking straight down or straight up: pick reference tangent
+        ref = np.array([0.0, 0.0, 1.0], dtype=np.float32) if abs(N[1]) > 0.8 else np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        f_tan = normalize(ref - N * float(np.dot(ref, N)))
+    else:
+        f_tan = f_tan / norm_f_tan
+
+    r_tan = normalize(cross(N, f_tan))
+    return N, f_tan, r_tan
+
+

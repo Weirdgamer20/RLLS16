@@ -9,6 +9,7 @@ from .shaders import (
     LINE_VS, LINE_FS,
     OVERLAY_VS, OVERLAY_FS,
     CUBESPHERE_TERRAIN_VS, CUBESPHERE_TERRAIN_FS,
+    VEGETATION_VS, VEGETATION_FS,
 )
 from .math3d import (
     identity, translate, scale, rotate_x, rotate_y, rotate_z,
@@ -239,6 +240,17 @@ class EarthRenderer:
             index_element_size=4
         )
 
+        # Hardware-instanced vegetation program (Sections 13 & 14)
+        try:
+            self.prog_vegetation = self.ctx.program(
+                vertex_shader=VEGETATION_VS,
+                fragment_shader=VEGETATION_FS,
+            )
+            self.tile_pool.set_vegetation_program(self.prog_vegetation)
+        except Exception as e:
+            print(f"[EarthRenderer] Vegetation program initialization warning: {e}")
+            self.prog_vegetation = None
+
         # Active Tier & Visual Debug Mode
         self.tier = EarthTier.HIGH_DETAIL_CUBESPHERE
         self.debug_mode = 0  # 0: Normal
@@ -368,6 +380,15 @@ class EarthRenderer:
         tier_used = self.tier
         visible_nodes = []
 
+        # True astronomical lighting direction (Section 17)
+        sun_world_pos = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        diff_sun = sun_world_pos - np.asarray(earth_pos, dtype=np.float32)
+        norm_diff = np.linalg.norm(diff_sun)
+        if norm_diff < 1e-4:
+            sun_dir = normalize(np.array([1.0, 0.25, 0.65], dtype=np.float32))
+        else:
+            sun_dir = normalize(diff_sun)
+
         # Try HIGH_DETAIL_CUBESPHERE or LOW_DETAIL_CUBESPHERE
         if self.tier in (EarthTier.HIGH_DETAIL_CUBESPHERE, EarthTier.LOW_DETAIL_CUBESPHERE):
             try:
@@ -381,7 +402,9 @@ class EarthRenderer:
                 self.prog_cubesphere['u_view'].write(mat4_bytes(view))
                 self.prog_cubesphere['u_proj'].write(mat4_bytes(proj))
                 self.prog_cubesphere['u_camera_pos'].value = tuple(eye_pos)
-                self.prog_cubesphere['u_sun_pos'].value = (0.0, 0.0, 0.0)
+                self.prog_cubesphere['u_sun_pos'].value = tuple(sun_world_pos)
+                if 'u_sun_dir' in self.prog_cubesphere:
+                    self.prog_cubesphere['u_sun_dir'].value = tuple(sun_dir)
                 self.prog_cubesphere['u_cloud_offset'].value = (sim_time_sec * 0.0003) % 1.0
                 self.prog_cubesphere['u_show_clouds'].value = 1.0 if show_clouds else 0.0
                 self.prog_cubesphere['u_show_atmo'].value = 1.0 if show_atmo else 0.0
@@ -403,12 +426,14 @@ class EarthRenderer:
                         earth_rot_angle=earth_rot_angle, axial_tilt=axial_tilt,
                         fovy_deg=camera.fovy, viewport_height=height,
                         frustum_planes=frustum_planes,
-                        render_distance=self.render_distance
+                        render_distance=self.render_distance,
+                        world_data=self.world_data,
                     )
                 else:
                     visible_nodes = self.lod_manager.roots
 
                 rendered_keys = set()
+                active_tiles = []
                 for node in visible_nodes:
                     tile = self.tile_pool.get_or_create(node, self.world_data, self.prog_cubesphere, radius=earth_radius)
                     # If child tile is still building on worker thread, fall back to resident ancestor (Point 2)
@@ -425,10 +450,32 @@ class EarthRenderer:
 
                     if tile is not None and tile.node_key not in rendered_keys:
                         rendered_keys.add(tile.node_key)
+                        active_tiles.append((node, tile))
                         self.prog_cubesphere['u_lod_level'].value = float(node.level)
                         tile.vao.render()
                         rendered_count += 1
                         current_max_lod = max(current_max_lod, node.level)
+
+                # Hardware-instanced 3D Vegetation Pass (Sections 13 & 14)
+                if self.debug_mode == 0 and self.prog_vegetation is not None:
+                    cam_pos_f64 = camera.get_eye_pos_f64() if hasattr(camera, 'get_eye_pos_f64') else np.asarray(eye_pos, dtype=np.float64)
+                    cam_dist_surf = max(0.001, np.linalg.norm(cam_pos_f64 - earth_pos) - earth_radius)
+                    if cam_dist_surf < 2.5:
+                        try:
+                            self.prog_vegetation['u_view'].write(mat4_bytes(view))
+                            self.prog_vegetation['u_proj'].write(mat4_bytes(proj))
+                            self.prog_vegetation['u_camera_pos'].value = tuple(eye_pos)
+                            self.prog_vegetation['u_sun_pos'].value = tuple(sun_world_pos)
+                            if 'u_sun_dir' in self.prog_vegetation:
+                                self.prog_vegetation['u_sun_dir'].value = tuple(sun_dir)
+                            self.prog_vegetation['u_time'].value = float(sim_time_sec)
+                            self.prog_vegetation['u_solar_irradiance'].value = float(solar_irradiance)
+
+                            for node, tile in active_tiles:
+                                if tile.veg_count > 0:
+                                    tile.render_vegetation()
+                        except Exception:
+                            pass
 
             except Exception as e:
                 print(f"[EarthRenderer] CubeSphere pass failed: {e}")
@@ -449,7 +496,9 @@ class EarthRenderer:
             self.prog_earth['u_view'].write(mat4_bytes(view))
             self.prog_earth['u_proj'].write(mat4_bytes(proj))
             self.prog_earth['u_camera_pos'].value = tuple(eye_pos)
-            self.prog_earth['u_sun_pos'].value = (0.0, 0.0, 0.0)
+            self.prog_earth['u_sun_pos'].value = tuple(sun_world_pos)
+            if 'u_sun_dir' in self.prog_earth:
+                self.prog_earth['u_sun_dir'].value = tuple(sun_dir)
             self.prog_earth['u_cloud_offset'].value = (sim_time_sec * 0.0003) % 1.0
             self.prog_earth['u_show_clouds'].value = 1.0 if show_clouds else 0.0
             self.prog_earth['u_show_atmo'].value = 1.0 if show_atmo else 0.0
@@ -816,7 +865,12 @@ class SceneRenderer:
         self.prog_moon['u_model'].write(mat4_bytes(m_moon))
         self.prog_moon['u_view'].write(mat4_bytes(view))
         self.prog_moon['u_proj'].write(mat4_bytes(proj))
+        diff_moon = np.array([0.0, 0.0, 0.0], dtype=np.float32) - np.asarray(moon_pos, dtype=np.float32)
+        norm_moon = np.linalg.norm(diff_moon)
+        moon_sun_dir = normalize(diff_moon) if norm_moon > 1e-4 else normalize(np.array([1.0, 0.25, 0.65], dtype=np.float32))
         self.prog_moon['u_sun_pos'].value = (0.0, 0.0, 0.0)
+        if 'u_sun_dir' in self.prog_moon:
+            self.prog_moon['u_sun_dir'].value = tuple(moon_sun_dir)
 
         self.tex_lunar.use(location=0)
         self.prog_moon['u_tex_lunar'].value = 0

@@ -7,7 +7,7 @@ import moderngl
 import numpy as np
 
 from .storage import load_world
-from .graphics.math3d import screen_to_ray, ray_sphere_intersect
+from .graphics.math3d import screen_to_ray, ray_sphere_intersect, unproject_terrain_hit
 from .graphics.camera import OrbitCamera
 from .graphics.renderer import SceneRenderer
 from .graphics.gpu_config import apply_gpu_environment_hints, configure_pygame_gl_attributes
@@ -135,6 +135,12 @@ class RLLS16App:
                 mx, my = pygame.mouse.get_pos()
                 is_ui_event = self.hud.is_mouse_over_ui(mx, my)
 
+                # Keep camera informed of astronomical planetary state
+                if astro_state:
+                    self.camera.earth_center = earth_pos
+                    self.camera.earth_rot_angle = astro_state.earth_rot_rad
+                    self.camera.axial_tilt = astro_state.axial_tilt_rad
+
                 # UI Events
                 if is_ui_event or event.type == pygame.MOUSEBUTTONUP:
                     action = self.hud.handle_event(event, self.world_instance, self.camera, self.renderer, astro_state=astro_state)
@@ -151,7 +157,7 @@ class RLLS16App:
                         now = time.time()
                         # Detect Double Click
                         if now - self.last_click_time < 0.28 and math.hypot(mx - self.last_click_pos[0], my - self.last_click_pos[1]) < 12:
-                            self._handle_double_click_focus(mx, my, earth_pos, moon_pos, sun_pos)
+                            self._handle_double_click_focus(mx, my, earth_pos, moon_pos, sun_pos, astro_state)
                         else:
                             self.camera.handle_mouse_down(event.button, (mx, my))
                         self.last_click_time = now
@@ -164,7 +170,8 @@ class RLLS16App:
                         self.camera.handle_mouse_motion((mx, my))
 
                     elif event.type == pygame.MOUSEWHEEL:
-                        self.camera.handle_mouse_wheel(event.y)
+                        precise_y = getattr(event, 'precise_y', float(event.y))
+                        self.camera.handle_mouse_wheel(precise_y, mouse_pos=(mx, my), width=self.width, height=self.height)
 
                 # Keyboard Controls
                 if event.type == pygame.KEYDOWN:
@@ -184,10 +191,29 @@ class RLLS16App:
             key_state = pygame.key.get_pressed()
             self.camera.handle_keyboard(key_state, dt)
 
-    def _handle_double_click_focus(self, mx: int, my: int, earth_pos: np.ndarray, moon_pos: np.ndarray, sun_pos: np.ndarray):
+    def _handle_double_click_focus(self, mx: int, my: int, earth_pos: np.ndarray, moon_pos: np.ndarray, sun_pos: np.ndarray, astro_state=None):
         """Ray cast from screen coordinates to detect double-click on Earth, Moon, or Sun."""
         view_mat = self.camera.get_view_matrix()
         proj_mat = self.camera.get_projection_matrix()
+
+        # Check pinpoint Earth surface hit first for geographic settlement inspection
+        rot_rad = astro_state.earth_rot_rad if astro_state else 0.0
+        tilt_rad = astro_state.axial_tilt_rad if astro_state else math.radians(23.44)
+        earth_hit = unproject_terrain_hit(
+            mx, my, self.width, self.height, view_mat, proj_mat,
+            earth_center=earth_pos, earth_radius=5.0,
+            world_data=self.canonical_world,
+            earth_rot_rad=rot_rad,
+            axial_tilt_rad=tilt_rad
+        )
+        if earth_hit is not None:
+            hit_world, lat, lon = earth_hit
+            lat_deg = math.degrees(lat)
+            lon_deg = math.degrees(lon)
+            self.camera.fly_to_lat_lon(lat_deg, lon_deg, earth_pos=earth_pos, earth_rot_rad=rot_rad, altitude=1.2, duration=2.0)
+            self.hud.show_message(f"Focused Earth: {abs(lat_deg):.1f}°{'N' if lat_deg >= 0 else 'S'}, {abs(lon_deg):.1f}°{'E' if lon_deg >= 0 else 'W'}")
+            return
+
         ray_origin, ray_dir = screen_to_ray(mx, my, self.width, self.height, view_mat, proj_mat)
 
         hit_sun = ray_sphere_intersect(ray_origin, ray_dir, sun_pos, 13.0)

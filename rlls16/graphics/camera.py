@@ -17,12 +17,16 @@ Features:
 
 import math
 import numpy as np
-from .math3d import look_at, perspective, normalize, cross
+from .math3d import (
+    look_at, perspective, normalize, cross,
+    unproject_terrain_hit, compute_surface_tangent_basis
+)
 
 
 class OrbitCamera:
     """
-    Continuous Multi-Scale Logarithmic Camera for RLLS 16.
+    Continuous Multi-Scale Logarithmic Camera with Inertial Dynamics,
+    Zoom-to-Cursor, Surface-Tangent Navigation, and Horizon Frustum Tracking.
     """
 
     def __init__(self, aspect: float = 16.0 / 9.0):
@@ -40,8 +44,19 @@ class OrbitCamera:
         self.target_pitch = self.pitch
         self.target_distance = self.distance
 
+        # Inertial dynamics velocities
+        self.zoom_velocity = 0.0
+        self.cam_velocity = np.zeros(3, dtype=np.float64)
+        self.yaw_velocity = 0.0
+        self.pitch_velocity = 0.0
+        self.pan_velocity = np.zeros(3, dtype=np.float64)
+
+        # Astronomical and planetary state tracking
+        self.earth_center = np.zeros(3, dtype=np.float64)
+        self.earth_rot_angle = 0.0
+        self.axial_tilt = math.radians(23.44)
+
         # Min/Max distance bounds
-        # Earth radius = 5.0; min_dist allows zooming down close to surface terrain
         self.min_dist = 5.005
         self.max_dist = 800.0
         self.world_data = None
@@ -69,6 +84,11 @@ class OrbitCamera:
         self.focus_target_name = name
         self.target_pos = np.asarray(position, dtype=np.float64)
         self.pan_offset = np.zeros(3, dtype=np.float64)
+        self.cam_velocity = np.zeros(3, dtype=np.float64)
+        self.zoom_velocity = 0.0
+        self.yaw_velocity = 0.0
+        self.pitch_velocity = 0.0
+        self.pan_velocity = np.zeros(3, dtype=np.float64)
 
         # Set appropriate min_dist depending on focused object
         if name == "EARTH":
@@ -82,6 +102,7 @@ class OrbitCamera:
 
         if distance is not None:
             self.target_distance = max(self.min_dist, float(distance))
+            self.distance = self.target_distance
         else:
             if name == "SUN":
                 self.target_distance = 65.0
@@ -95,6 +116,7 @@ class OrbitCamera:
             elif name == "SOLAR":
                 self.target_distance = 190.0
                 self.target_pitch = 0.55
+            self.distance = self.target_distance
 
         if snap:
             self.snap_to_target()
@@ -109,6 +131,8 @@ class OrbitCamera:
         self.distance = self.target_distance
         self.yaw = self.target_yaw
         self.pitch = self.target_pitch
+        self.zoom_velocity = 0.0
+        self.cam_velocity = np.zeros(3, dtype=np.float64)
 
     def fly_to_lat_lon(
         self,
@@ -120,13 +144,12 @@ class OrbitCamera:
         duration: float = 2.0
     ):
         """
-        Point 53: Smooth fly-to animation to pinpoint a geographic settlement on Earth.
+        Smooth fly-to animation to pinpoint a geographic settlement or point on Earth.
         """
         target = earth_pos if earth_pos is not None else self.current_focus_pos
         self.focus_object("EARTH", target, distance=5.0 + altitude)
         lat_rad = math.radians(lat_deg)
         lon_rad = math.radians(lon_deg)
-        # Aim camera at the location factoring diurnal rotation
         self.target_pitch = max(-math.pi / 2.0 + 0.08, min(math.pi / 2.0 - 0.08, lat_rad))
         self.target_yaw = -(lon_rad + earth_rot_rad) + math.pi / 2.0
         self.is_flying = True
@@ -151,74 +174,133 @@ class OrbitCamera:
         dy = pos[1] - self.last_mouse_pos[1]
         self.last_mouse_pos = pos
 
-        # Continuous altitude-scaled navigation speeds
         altitude = max(0.002, self.distance - self.min_dist)
 
         if self.is_orbiting:
-            # Scale orbit sensitivity according to altitude above planet surface
             sensitivity = 0.0042 * min(1.0, 0.15 + 0.85 * math.log10(max(1.0, altitude * 4.0 + 1.0)))
+            self.yaw_velocity += dx * sensitivity * 12.0
+            self.pitch_velocity += dy * sensitivity * 12.0
             self.target_yaw += dx * sensitivity
             self.target_pitch += dy * sensitivity
-            # Clamp pitch to prevent gimbal flip
             self.target_pitch = max(-math.pi / 2.0 + 0.04, min(math.pi / 2.0 - 0.04, self.target_pitch))
 
         elif self.is_panning:
-            # Pan speed proportional to true altitude
             pan_speed = 0.0007 * max(0.02, altitude)
             forward, right, up = self.get_basis()
             delta_pan = -right.astype(np.float64) * (dx * pan_speed) + up.astype(np.float64) * (dy * pan_speed)
+            self.pan_velocity += delta_pan * 8.0
             self.pan_offset += delta_pan
             self.target_pos += delta_pan
 
-    def handle_mouse_wheel(self, y: float):
+    def handle_mouse_wheel(
+        self,
+        y: float,
+        mouse_pos: tuple[int, int] | None = None,
+        width: int = 1280,
+        height: int = 720,
+    ):
         """
-        Deep zoom logarithmic zoom step dynamically scaling with altitude.
-        Continuous from solar system (180+) to near-ground (0.005).
+        Inertial zoom impulse with altitude-scaled logarithmic response and planetary zoom-to-cursor.
         """
-        altitude = max(0.002, self.target_distance - self.min_dist)
-        step = max(0.003, altitude * 0.15)
-
-        if y > 0:
-            # Zoom In
-            self.target_distance = max(self.min_dist, self.target_distance - step)
+        # Normalize delta_y: handles both standard 1/-1 steps and precise_y or high-res wheel ticks
+        if abs(y) > 10.0:
+            norm_y = y / 120.0
         else:
-            # Zoom Out
-            self.target_distance = min(self.max_dist, self.target_distance + step)
+            norm_y = math.copysign(min(3.0, max(0.1, abs(y))), y)
+
+        altitude = max(0.001, self.distance - self.min_dist)
+        # Logarithmic scale: small steps near ground, large steps in deep space
+        impulse_mag = max(0.003, altitude * 0.18)
+        self.zoom_velocity -= norm_y * impulse_mag * 10.0
+
+        # Zoom-to-cursor support:
+        # If cursor is provided and pointing at Earth, shift target/pan towards that surface point
+        if norm_y > 0 and mouse_pos is not None and self.focus_target_name == "EARTH":
+            try:
+                view_mat = self.get_view_matrix()
+                proj_mat = self.get_projection_matrix()
+                earth_c = self.earth_center if hasattr(self, 'earth_center') else self.current_focus_pos
+                hit_info = unproject_terrain_hit(
+                    mouse_pos[0], mouse_pos[1], width, height,
+                    view_mat, proj_mat,
+                    earth_center=earth_c,
+                    earth_radius=5.0,
+                    world_data=self.world_data,
+                    earth_rot_rad=getattr(self, 'earth_rot_angle', 0.0),
+                    axial_tilt_rad=getattr(self, 'axial_tilt', math.radians(23.44))
+                )
+                if hit_info is not None:
+                    hit_world, _, _ = hit_info
+                    shift_frac = min(0.30, max(0.02, (impulse_mag / max(0.1, self.distance)) * 0.85))
+                    delta_target = (hit_world - self.target_pos) * shift_frac
+                    self.pan_offset += delta_target
+                    self.target_pos += delta_target
+            except Exception:
+                pass
 
     def handle_keyboard(self, key_state, dt: float):
         import pygame
-        altitude = max(0.005, self.distance - self.min_dist)
-        pan_speed = 18.0 * dt * max(0.005, altitude / 20.0)
+        altitude = max(0.002, self.distance - self.min_dist)
+        base_speed = max(0.02, altitude * 0.75)
+
+        def is_down(k):
+            if hasattr(key_state, 'get'):
+                return bool(key_state.get(k, False))
+            try:
+                return bool(key_state[k])
+            except (IndexError, KeyError):
+                return False
+
+        is_shift = is_down(pygame.K_LSHIFT) or is_down(pygame.K_RSHIFT)
+        speed = base_speed * (2.5 if is_shift else 1.0)
+
         forward, right, up = self.get_basis()
 
-        delta_pan = np.zeros(3, dtype=np.float64)
-        if key_state[pygame.K_w]:
-            delta_pan += forward.astype(np.float64) * pan_speed
-        if key_state[pygame.K_s]:
-            delta_pan -= forward.astype(np.float64) * pan_speed
-        if key_state[pygame.K_a]:
-            delta_pan -= right.astype(np.float64) * pan_speed
-        if key_state[pygame.K_d]:
-            delta_pan += right.astype(np.float64) * pan_speed
-        if key_state[pygame.K_q]:
-            delta_pan += np.array([0.0, 1.0, 0.0], dtype=np.float64) * pan_speed
-        if key_state[pygame.K_e]:
-            delta_pan -= np.array([0.0, 1.0, 0.0], dtype=np.float64) * pan_speed
+        # Surface-tangent basis when navigating Earth
+        if self.focus_target_name == "EARTH":
+            earth_c = getattr(self, 'earth_center', self.current_focus_pos)
+            N, f_tan, r_tan = compute_surface_tangent_basis(self.current_focus_pos, earth_c, forward)
+            N = N.astype(np.float64)
+            f_tan = f_tan.astype(np.float64)
+            r_tan = r_tan.astype(np.float64)
+        else:
+            N = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            f_tan = forward.astype(np.float64)
+            r_tan = right.astype(np.float64)
 
-        if np.any(delta_pan != 0.0):
-            self.pan_offset += delta_pan
-            self.target_pos += delta_pan
+        accel = np.zeros(3, dtype=np.float64)
+        if is_down(pygame.K_w):
+            accel += f_tan
+        if is_down(pygame.K_s):
+            accel -= f_tan
+        if is_down(pygame.K_a):
+            accel -= r_tan
+        if is_down(pygame.K_d):
+            accel += r_tan
+        if is_down(pygame.K_q):
+            accel += N
+        if is_down(pygame.K_e):
+            accel -= N
 
-        zoom_step = max(0.004, altitude * 0.08)
-        if key_state[pygame.K_PLUS] or key_state[pygame.K_EQUALS]:
-            self.target_distance = max(self.min_dist, self.target_distance - zoom_step)
-        if key_state[pygame.K_MINUS]:
-            self.target_distance = min(self.max_dist, self.target_distance + zoom_step)
+        # Reset camera orientation / level horizon
+        if is_down(pygame.K_r):
+            self.target_pitch = 0.35
+            self.pitch_velocity = 0.0
+
+        norm_accel = np.linalg.norm(accel)
+        if norm_accel > 1e-5:
+            accel = accel / norm_accel
+            self.cam_velocity += accel * (speed * 16.0) * dt
+
+        zoom_step = max(0.004, altitude * 0.12)
+        if is_down(pygame.K_PLUS) or is_down(pygame.K_EQUALS):
+            self.zoom_velocity -= zoom_step * 10.0
+        if is_down(pygame.K_MINUS):
+            self.zoom_velocity += zoom_step * 10.0
 
     def update(self, dynamic_target_pos: np.ndarray | None, dt: float):
         """
-        Point 12: Frame-rate-independent exponential critically damped motion.
-        Supports deep zoom down to near-surface with dynamic ground clearance and near clip plane.
+        Frame-rate-independent inertial dynamics with surface clearance and horizon frustum.
         """
         if dynamic_target_pos is not None:
             self.target_pos = np.asarray(dynamic_target_pos, dtype=np.float64) + self.pan_offset
@@ -233,13 +315,44 @@ class OrbitCamera:
                 lat = math.asin(max(-1.0, min(1.0, norm_dir[1])))
                 lon = math.atan2(norm_dir[0], norm_dir[2])
                 surf_r = sample_terrain_altitude(lat, lon, self.world_data, radius=5.0, terrain_amp=0.35)
-                # Allow camera to approach within 0.005 units (~30-50m) of displaced terrain
-                self.min_dist = surf_r + 0.005
+                self.min_dist = surf_r + 0.004
                 self.target_distance = max(self.min_dist, self.target_distance)
 
-        # dt-independent exponential smoothing
+        # Integrate zoom velocity into target_distance
+        self.target_distance += self.zoom_velocity * dt
+        self.zoom_velocity *= math.exp(-8.0 * max(1e-4, dt))
+        if abs(self.zoom_velocity) < 1e-6:
+            self.zoom_velocity = 0.0
+
+        # Integrate mouse orbit inertia into target yaw and pitch
+        self.target_yaw += self.yaw_velocity * dt
+        self.target_pitch += self.pitch_velocity * dt
+        self.target_pitch = max(-math.pi / 2.0 + 0.04, min(math.pi / 2.0 - 0.04, self.target_pitch))
+        self.yaw_velocity *= math.exp(-9.0 * max(1e-4, dt))
+        self.pitch_velocity *= math.exp(-9.0 * max(1e-4, dt))
+
+        # Integrate keyboard camera velocity with exponential damping
+        self.pan_offset += self.cam_velocity * dt
+        self.target_pos += self.cam_velocity * dt
+        self.cam_velocity *= math.exp(-7.0 * max(1e-4, dt))
+        if np.linalg.norm(self.cam_velocity) < 1e-6:
+            self.cam_velocity = np.zeros(3, dtype=np.float64)
+
+        self.pan_offset += self.pan_velocity * dt
+        self.target_pos += self.pan_velocity * dt
+        self.pan_velocity *= math.exp(-8.0 * max(1e-4, dt))
+
+        # Clamp target_distance against min_dist & max_dist
+        if self.target_distance < self.min_dist:
+            self.target_distance = self.min_dist
+            self.zoom_velocity = max(0.0, self.zoom_velocity)
+        elif self.target_distance > self.max_dist:
+            self.target_distance = self.max_dist
+            self.zoom_velocity = min(0.0, self.zoom_velocity)
+
+        # Smooth critically damped motion towards targets
         decay_pos = 1.0 - math.exp(-8.5 * max(1e-4, dt))
-        decay_rot = 1.0 - math.exp(-10.0 * max(1e-4, dt))
+        decay_rot = 1.0 - math.exp(-12.0 * max(1e-4, dt))
         decay_dist = 1.0 - math.exp(-9.0 * max(1e-4, dt))
 
         self.current_focus_pos += (self.target_pos - self.current_focus_pos) * decay_pos
@@ -247,9 +360,20 @@ class OrbitCamera:
         self.pitch += (self.target_pitch - self.pitch) * decay_rot
         self.distance += (self.target_distance - self.distance) * decay_dist
 
-        # Dynamic near clipping plane: scales smoothly down to 0.001 to prevent near-clipping at deep zoom
+        # Dynamic near clipping plane: safe fraction of local altitude
         altitude = max(0.002, self.distance - self.min_dist)
-        self.near = max(0.001, min(0.5, altitude * 0.08))
+        self.near = max(0.0005, min(0.5, altitude * 0.04))
+
+        # Dynamic far clipping plane: visible horizon + margin
+        if self.focus_target_name == "EARTH" and self.distance > 5.0:
+            d_sq = self.distance * self.distance
+            r_sq = 5.0 * 5.0
+            horizon_d = math.sqrt(max(0.01, d_sq - r_sq))
+            self.far = max(25.0, min(3000.0, horizon_d * 2.2 + 10.0))
+        elif self.focus_target_name == "SOLAR":
+            self.far = 3000.0
+        else:
+            self.far = max(50.0, self.distance * 3.5)
 
         if getattr(self, "is_flying", False):
             self.fly_elapsed += dt
@@ -290,3 +414,8 @@ class OrbitCamera:
 
     def get_projection_matrix(self) -> np.ndarray:
         return perspective(self.fovy, self.aspect, self.near, self.far)
+
+
+# Point 20: PlanetCamera alias
+PlanetCamera = OrbitCamera
+

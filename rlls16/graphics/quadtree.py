@@ -9,6 +9,7 @@ ensuring adaptive subdivision from planetary orbit down to regional/settlement s
 import math
 import numpy as np
 from .cubesphere import cube_to_sphere
+from .math3d import sample_terrain_altitude
 
 
 class QuadtreeNode:
@@ -96,6 +97,7 @@ class LODManager:
         viewport_height: int = 768,
         frustum_planes: list[np.ndarray] | np.ndarray | None = None,
         render_distance: float | None = None,
+        world_data: dict | None = None,
     ) -> list[QuadtreeNode]:
         """
         Evaluate LOD across all faces given camera state, Earth orientation, and projection parameters.
@@ -152,14 +154,25 @@ class LODManager:
         fovy_rad = math.radians(fovy_deg)
         proj_scale = (viewport_height * 0.5) / max(1e-4, math.tan(fovy_rad * 0.5))
 
-        # Effective render distance with hysteresis
-        # If not specified, default to generous horizon-aware distance
-        if render_distance is not None and render_distance > 0:
-            effective_render_dist = float(render_distance)
+        # Scale-dependent streaming radius (Section 10)
+        # At planetary orbit, the streaming horizon must encompass the visible sphere.
+        # At regional/ground scale, the streaming radius concentrates on local terrain.
+        horizon_approx = math.sqrt(max(0.01, 2.0 * radius * altitude + altitude * altitude))
+        if altitude > 2.0:
+            auto_stream_dist = cam_dist + radius * 1.5
+        elif altitude > 0.3:
+            auto_stream_dist = cam_dist + horizon_approx * 1.8 + 1.0
         else:
-            # Automatic distance based on camera altitude
-            horizon_approx = math.sqrt(max(0.01, 2.0 * radius * altitude + altitude * altitude))
-            effective_render_dist = max(radius * 1.5, cam_dist + horizon_approx * 1.6)
+            auto_stream_dist = max(0.20, altitude * 4.0 + 0.35)
+
+        if render_distance is not None and render_distance > 0:
+            # Custom render distance cutoff
+            if altitude > 1.5:
+                effective_render_dist = max(cam_dist + radius * 0.5, float(render_distance))
+            else:
+                effective_render_dist = float(render_distance)
+        else:
+            effective_render_dist = auto_stream_dist
 
         # Unload distance buffer (25% hysteresis margin)
         unload_render_dist = effective_render_dist * 1.25
@@ -182,8 +195,15 @@ class LODManager:
                 self.culled_node_count += 1
                 return
 
-            # 2. Distance from camera to node surface point in world space
+            # 2. Terrain-aware distance from camera to node surface point in world space (Section 9)
             sc = node.center_sphere
+            if world_data is not None:
+                lat = math.asin(max(-1.0, min(1.0, float(sc[1]))))
+                lon = math.atan2(float(sc[0]), float(sc[2]))
+                node_r = sample_terrain_altitude(lat, lon, world_data, radius=radius, terrain_amp=0.35)
+            else:
+                node_r = radius
+
             px = cz_neg * sc[0] - sz_neg * sc[1]
             py = sz_neg * sc[0] + cz_neg * sc[1]
             pz = sc[2]
@@ -191,7 +211,7 @@ class LODManager:
             wx = cy_pos * px + sy_pos * pz
             wy = py
             wz = -sy_pos * px + cy_pos * pz
-            node_world = planet_pos_f64 + np.array([wx, wy, wz], dtype=np.float64) * radius
+            node_world = planet_pos_f64 + np.array([wx, wy, wz], dtype=np.float64) * node_r
 
             # Tighter bounding radius matching actual chord + maximum procedural elevation
             terrain_margin = min(0.25, 0.03 + 0.35 / (2 ** max(0, node.level - 1)))
