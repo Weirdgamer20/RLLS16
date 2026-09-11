@@ -214,6 +214,25 @@ def run_planetary_navigation_suite():
     assert np.allclose(actual_sun_dir, expected_sun_dir, atol=1e-4), "Shader u_sun_dir must match true astronomical sun direction"
     print(f"  -> Astronomical Sun direction verified in shader: {actual_sun_dir} (dot with expected = {np.dot(actual_sun_dir, expected_sun_dir):.4f})")
 
+    # Verify AstronomicalState typed contract & dual mapping interface
+    from rlls16.simulation.astronomy import compute_astronomical_state, AstronomicalState
+    astro_state = compute_astronomical_state(3600.0)
+    assert isinstance(astro_state, AstronomicalState), "compute_astronomical_state must return AstronomicalState"
+    assert hasattr(astro_state, 'earth_rot_angle')
+    assert hasattr(astro_state, 'earth_rot_rad')
+    assert hasattr(astro_state, 'axial_tilt')
+    assert hasattr(astro_state, 'axial_tilt_rad')
+    assert astro_state.earth_rot_rad == astro_state.earth_rot_angle
+    assert astro_state.axial_tilt == astro_state.axial_tilt_rad
+    assert astro_state["earth_rot_angle"] == astro_state.earth_rot_angle
+    assert astro_state["earth_rot_rad"] == astro_state.earth_rot_rad
+    assert astro_state["axial_tilt"] == astro_state.axial_tilt
+    assert astro_state["axial_tilt_rad"] == astro_state.axial_tilt_rad
+    assert "earth_pos" in astro_state
+    assert "earth_rot_rad" in astro_state
+    assert "axial_tilt" in astro_state
+    print("  -> AstronomicalState typed contract & dual mapping interface verified: PASSED")
+
     # -----------------------------------------------------------------
     # TEST 6: Deterministic Instanced Vegetation System
     # -----------------------------------------------------------------

@@ -80,6 +80,22 @@ class OrbitCamera:
     def set_aspect(self, aspect: float):
         self.aspect = max(0.1, aspect)
 
+    @property
+    def earth_rot_rad(self) -> float:
+        return self.earth_rot_angle
+
+    @earth_rot_rad.setter
+    def earth_rot_rad(self, value: float):
+        self.earth_rot_angle = value
+
+    @property
+    def axial_tilt_rad(self) -> float:
+        return self.axial_tilt
+
+    @axial_tilt_rad.setter
+    def axial_tilt_rad(self, value: float):
+        self.axial_tilt = value
+
     def focus_object(self, name: str, position: np.ndarray, distance: float | None = None, snap: bool = False):
         self.focus_target_name = name
         self.target_pos = np.asarray(position, dtype=np.float64)

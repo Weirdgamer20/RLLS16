@@ -7,16 +7,89 @@ EARTH_ORBIT_RADIUS = 90.0          # Render distance units
 EARTH_ORBIT_PERIOD_DAYS = 365.25   # Days for 1 revolution around Sun
 EARTH_ROTATION_PERIOD_HOURS = 24.0 # Hours for 1 full diurnal rotation
 EARTH_AXIAL_TILT_DEG = 23.44       # Earth obliquity to ecliptic
+EARTH_AXIAL_TILT_RAD = math.radians(EARTH_AXIAL_TILT_DEG)
 
 MOON_ORBIT_RADIUS = 12.0           # Render distance units from Earth center
 MOON_ORBIT_PERIOD_DAYS = 27.32166  # Sidereal orbit period
 MOON_ORBIT_INCLINATION_DEG = 5.14  # Inclination to ecliptic
 
 
-def compute_astronomical_state(sim_time_sec: float) -> dict:
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Iterator
+
+
+@dataclass(frozen=True)
+class AstronomicalState(Mapping):
+    """
+    Immutable, fully typed astronomical state contract for Earth, Moon, and Sun.
+    Implements the Mapping protocol for 100% transparent dictionary backward-compatibility,
+    while providing canonical typed attributes and normalized aliases.
+    """
+    days: float
+    sun_pos: np.ndarray
+    earth_pos: np.ndarray
+    earth_rot_angle: float
+    moon_pos: np.ndarray
+    moon_rot_angle: float
+    earth_sun_dist_au: float
+    moon_earth_dist_km: float
+    season: str
+    axial_tilt_rad: float = EARTH_AXIAL_TILT_RAD
+    axial_tilt_deg: float = EARTH_AXIAL_TILT_DEG
+
+    # Normalized aliases for attribute access
+    @property
+    def earth_rot_rad(self) -> float:
+        """Alias for earth_rot_angle (radians)."""
+        return self.earth_rot_angle
+
+    @property
+    def axial_tilt(self) -> float:
+        """Alias for axial_tilt_rad (radians)."""
+        return self.axial_tilt_rad
+
+    # Mapping protocol implementation for transparent dictionary access
+    def __getitem__(self, key: str) -> Any:
+        if key in ("earth_rot_rad", "earth_rot_angle"):
+            return self.earth_rot_angle
+        elif key in ("axial_tilt", "axial_tilt_rad"):
+            return self.axial_tilt_rad
+        elif key == "axial_tilt_deg":
+            return self.axial_tilt_deg
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+
+    def __contains__(self, key: object) -> bool:
+        if key in ("earth_rot_rad", "axial_tilt"):
+            return True
+        return hasattr(self, str(key)) and not str(key).startswith("_")
+
+    def __len__(self) -> int:
+        return 11
+
+    def __iter__(self) -> Iterator[str]:
+        yield from [
+            "days", "sun_pos", "earth_pos", "earth_rot_angle",
+            "moon_pos", "moon_rot_angle", "earth_sun_dist_au",
+            "moon_earth_dist_km", "season", "axial_tilt_rad",
+            "axial_tilt_deg"
+        ]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+def compute_astronomical_state(sim_time_sec: float) -> AstronomicalState:
     """
     Deterministically computes the spatial state of Earth and Moon
     given accumulated simulation time in seconds.
+    Returns an immutable, typed AstronomicalState (with Mapping compatibility).
     """
     days = sim_time_sec / 86400.0
 
@@ -47,20 +120,19 @@ def compute_astronomical_state(sim_time_sec: float) -> dict:
     quadrant = int((earth_orbit_phase % (2.0 * math.pi)) / (math.pi / 2.0))
     season = season_names[quadrant]
 
-    return {
-        "days": days,
-        "sun_pos": SUN_POSITION,
-        "earth_pos": earth_pos,
-        "earth_rot_angle": earth_rot_angle,
-        "moon_pos": moon_pos,
-        "moon_rot_angle": moon_rot_angle,
-        "earth_sun_dist_au": 1.0,
-        "moon_earth_dist_km": 384400,
-        "season": season,
-    }
-
-
-from dataclasses import dataclass, field
+    return AstronomicalState(
+        days=days,
+        sun_pos=SUN_POSITION,
+        earth_pos=earth_pos,
+        earth_rot_angle=earth_rot_angle,
+        moon_pos=moon_pos,
+        moon_rot_angle=moon_rot_angle,
+        earth_sun_dist_au=1.0,
+        moon_earth_dist_km=384400,
+        season=season,
+        axial_tilt_rad=EARTH_AXIAL_TILT_RAD,
+        axial_tilt_deg=EARTH_AXIAL_TILT_DEG,
+    )
 
 
 @dataclass(frozen=True)
@@ -81,7 +153,7 @@ class CanonicalCelestialSystem:
     solar_constant_w_m2: float = 1361.0  # W/m^2 canonical solar irradiance
 
     @staticmethod
-    def compute_state(sim_time_sec: float) -> dict:
+    def compute_state(sim_time_sec: float) -> AstronomicalState:
         return compute_astronomical_state(sim_time_sec)
 
 

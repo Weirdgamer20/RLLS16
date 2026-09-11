@@ -11,7 +11,7 @@ from .graphics.math3d import screen_to_ray, ray_sphere_intersect, unproject_terr
 from .graphics.camera import OrbitCamera
 from .graphics.renderer import SceneRenderer
 from .graphics.gpu_config import apply_gpu_environment_hints, configure_pygame_gl_attributes
-from .simulation.astronomy import compute_astronomical_state, SUN_POSITION
+from .simulation.astronomy import compute_astronomical_state, SUN_POSITION, AstronomicalState
 from .simulation.world_instance import WorldInstance
 from .ui.home import HomeScreen
 from .ui.hud import SimulationHUD
@@ -86,7 +86,7 @@ class RLLS16App:
         self.app_state = "SIMULATION"
         astro_state = compute_astronomical_state(self.world_instance.sim_time_sec)
         # Point 1: Immediately snap camera focus to Earth
-        self.camera.focus_object("EARTH", astro_state["earth_pos"], distance=22.0, snap=True)
+        self.camera.focus_object("EARTH", astro_state.earth_pos, distance=22.0, snap=True)
         self.hud.show_message(f"World Created: {name} (Habitat: {environment})")
 
     def load_existing_world(self, path: str):
@@ -94,13 +94,13 @@ class RLLS16App:
         self.app_state = "SIMULATION"
         astro_state = compute_astronomical_state(self.world_instance.sim_time_sec)
         # Point 1: Immediately snap camera focus to Earth
-        self.camera.focus_object("EARTH", astro_state["earth_pos"], distance=22.0, snap=True)
+        self.camera.focus_object("EARTH", astro_state.earth_pos, distance=22.0, snap=True)
         self.hud.show_message(f"World Loaded: {self.world_instance.world_name}")
 
     def handle_events(self, dt: float):
         astro_state = compute_astronomical_state(self.world_instance.sim_time_sec if self.world_instance else 0.0)
-        earth_pos = astro_state["earth_pos"]
-        moon_pos = astro_state["moon_pos"]
+        earth_pos = astro_state.earth_pos
+        moon_pos = astro_state.moon_pos
         sun_pos = SUN_POSITION
 
         for event in pygame.event.get():
@@ -138,7 +138,7 @@ class RLLS16App:
                 # Keep camera informed of astronomical planetary state
                 if astro_state:
                     self.camera.earth_center = earth_pos
-                    self.camera.earth_rot_angle = astro_state.earth_rot_rad
+                    self.camera.earth_rot_angle = astro_state.earth_rot_angle
                     self.camera.axial_tilt = astro_state.axial_tilt_rad
 
                 # UI Events
@@ -197,7 +197,7 @@ class RLLS16App:
         proj_mat = self.camera.get_projection_matrix()
 
         # Check pinpoint Earth surface hit first for geographic settlement inspection
-        rot_rad = astro_state.earth_rot_rad if astro_state else 0.0
+        rot_rad = astro_state.earth_rot_angle if astro_state else 0.0
         tilt_rad = astro_state.axial_tilt_rad if astro_state else math.radians(23.44)
         earth_hit = unproject_terrain_hit(
             mx, my, self.width, self.height, view_mat, proj_mat,
@@ -263,8 +263,8 @@ class RLLS16App:
                 solar_irradiance = self.world_instance.environment.solar_irradiance
 
             astro_state = compute_astronomical_state(sim_time_sec)
-            earth_pos = astro_state["earth_pos"]
-            moon_pos = astro_state["moon_pos"]
+            earth_pos = astro_state.earth_pos
+            moon_pos = astro_state.moon_pos
 
             # Dynamic camera tracking if following a moving body
             target_pos = None
@@ -293,9 +293,9 @@ class RLLS16App:
                 camera=self.camera,
                 sim_time_sec=sim_time_sec,
                 earth_pos=earth_pos,
-                earth_rot_angle=astro_state["earth_rot_angle"],
+                earth_rot_angle=astro_state.earth_rot_angle,
                 moon_pos=moon_pos,
-                moon_rot_angle=astro_state["moon_rot_angle"],
+                moon_rot_angle=astro_state.moon_rot_angle,
                 solar_irradiance=solar_irradiance,
                 ui_surface=self.ui_surface,
             )
