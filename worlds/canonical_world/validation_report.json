@@ -1,0 +1,21 @@
+{
+  "status": "VALID",
+  "errors": [],
+  "resolution": "256 x 512",
+  "land_fraction": 0.292,
+  "ocean_fraction": 0.708,
+  "elevation_min": 0.08,
+  "elevation_max": 0.95,
+  "elevation_mean": 0.385,
+  "biome_distribution": {
+    "0": 92799,
+    "1": 5543,
+    "2": 4044,
+    "3": 10066,
+    "4": 12562,
+    "5": 4283,
+    "6": 1775
+  },
+  "generation_time_sec": 0.917,
+  "seed": 16001
+}

@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Testing & Diagnostics
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Saved simulation instance states (keep folder tracked via .gitkeep)
+simulations/*
+!simulations/.gitkeep
