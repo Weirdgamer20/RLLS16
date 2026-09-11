@@ -412,10 +412,40 @@ void main() {
     vec4 albedo_sample = texture(u_tex_albedo, v_uv);
     vec3 surface_color = albedo_sample.rgb;
 
+    // -------------------------------------------------------------
+    // INCREASING SPATIAL DETAIL AT DEEP ZOOM
+    // -------------------------------------------------------------
+    float dist_to_cam = length(u_camera_pos - v_world_pos);
+    float detail_factor = clamp(1.0 - (dist_to_cam - 0.05) / 3.8, 0.0, 1.0);
+
+    if (detail_factor > 0.0) {
+        vec3 radial_norm = normalize(v_world_pos);
+        float slope = 1.0 - clamp(dot(N, radial_norm), 0.0, 1.0);
+
+        if (v_land > 0.5) {
+            // 1. Slope-aware rocky cliff striations on steep terrain
+            float rock_strata = sin(v_elev * 800.0 + sin(v_uv.x * 2000.0) * 0.5) * 0.5 + 0.5;
+            vec3 rock_col = mix(vec3(0.38, 0.35, 0.30), vec3(0.58, 0.55, 0.50), rock_strata);
+            float cliff_blend = smoothstep(0.08, 0.28, slope) * detail_factor;
+            surface_color = mix(surface_color, rock_col, cliff_blend);
+
+            // 2. High-frequency spatial micro-noise to prevent texture blur
+            vec2 micro_uv = v_uv * 2048.0;
+            float micro_grain = sin(micro_uv.x * 3.14 + sin(micro_uv.y * 4.2)) * cos(micro_uv.y * 3.14 + cos(micro_uv.x * 3.8));
+            surface_color *= (1.0 + micro_grain * 0.10 * detail_factor);
+        } else {
+            // 3. Ocean surface water micro-ripples
+            vec2 ocean_uv = v_uv * 4096.0;
+            float wave = sin(ocean_uv.x + u_cloud_offset * 120.0) * cos(ocean_uv.y + u_cloud_offset * 90.0);
+            surface_color += vec3(0.02, 0.05, 0.09) * wave * detail_factor;
+        }
+    }
+
     // Ocean specular reflection (water glint on daylight side)
     if (v_land < 0.5) {
         float NdotH = max(dot(N, H), 0.0);
-        float spec = pow(NdotH, 48.0) * max(NdotL, 0.0);
+        float spec_exp = mix(48.0, 192.0, detail_factor);
+        float spec = pow(NdotH, spec_exp) * max(NdotL, 0.0);
         surface_color += vec3(0.85, 0.92, 1.0) * (spec * 0.70 * u_solar_irradiance);
     }
 

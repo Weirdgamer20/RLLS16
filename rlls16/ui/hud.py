@@ -412,6 +412,20 @@ class SimulationHUD:
 
                     content_y += 26
 
+                    dist_btn = pygame.Rect(16, content_y, self.left_panel_width - 32, 20)
+                    if dist_btn.collidepoint(panel_mx, my):
+                        opts = [2.5, 4.5, 7.5, None]
+                        cur_dist = renderer.render_distance if renderer else None
+                        cur_idx = 3 if cur_dist is None else (0 if cur_dist <= 3.0 else (1 if cur_dist <= 5.5 else 2))
+                        nxt_dist = opts[(cur_idx + 1) % len(opts)]
+                        if renderer:
+                            renderer.render_distance = nxt_dist
+                        lbl = "Ultra (Horizon)" if nxt_dist is None else f"{nxt_dist:.1f} Units"
+                        self.show_message(f"Chunk Render Distance: {lbl}")
+                        return None
+
+                    content_y += 24
+
                     toggles = ["Atmosphere", "Clouds", "Orbits", "Grid"]
                     for idx, name in enumerate(toggles):
                         chk_rect = pygame.Rect(16, content_y + idx * 22, self.left_panel_width - 32, 20)
@@ -761,6 +775,13 @@ class SimulationHUD:
 
                     content_y += 26
 
+                    cur_dist = renderer.render_distance if renderer else None
+                    dist_lbl = "Ultra (Horizon)" if cur_dist is None else f"{cur_dist:.1f} Units"
+                    dist_btn = pygame.Rect(panel_x + 16, content_y, pw - 32, 20)
+                    draw_button(surface, dist_btn, f"CHUNK DIST: {dist_lbl}", f_small, dist_btn.collidepoint(mx, my))
+
+                    content_y += 24
+
                     toggles = [
                         ("Atmosphere Layer", renderer.show_atmo if renderer else True),
                         ("Dynamic Clouds", renderer.show_clouds if renderer else True),
@@ -847,10 +868,14 @@ class SimulationHUD:
         is_ded = self.gpu_info.get("is_dedicated", False) if self.gpu_info else False
 
         telem = renderer.telemetry if renderer else {}
-        vis_tiles = telem.get("tiles_visible", 6)
-        tot_tiles = telem.get("tiles_total", 6)
-        cur_lod = telem.get("max_lod", 0)
+        vis_tiles = telem.get("rendered_tiles", telem.get("tiles_visible", 6))
+        tot_tiles = telem.get("visible_nodes", 6)
+        culled = telem.get("culled_nodes", 0)
+        cur_lod = telem.get("max_active_lod", 0)
         vram_mb = telem.get("vram_mb", 1.2)
+        gpu_cached = telem.get("gpu_cache_size", 0)
+        cpu_cached = telem.get("cpu_cache_size", 0)
+        reused = telem.get("reused_buffers", 0)
         frame_ms = 1000.0 / max(1.0, fps)
 
         items = [
@@ -859,14 +884,14 @@ class SimulationHUD:
             ("Moon Phase", f"{math.degrees(astro['moon_rot_angle']):.1f}°"),
             ("Active GPU", f"{gpu_short[:20]}"),
             ("Render Rate", f"{fps:.0f} FPS ({frame_ms:.1f} ms)"),
-            ("Quadtree Tiles", f"{vis_tiles} vis / {tot_tiles} tot [LOD {cur_lod}]"),
-            ("Terrain VRAM", f"{vram_mb:.2f} MB Resident"),
+            ("Active Chunks", f"{vis_tiles} draw / {culled} culled [LOD {cur_lod}]"),
+            ("Chunk Cache", f"GPU:{gpu_cached} | RAM:{cpu_cached} ({reused} reused)"),
             ("Fall-back Tier", f"{renderer.earth_renderer.active_tier_name if (renderer and hasattr(renderer, 'earth_renderer')) else 'ACTIVE'}"),
         ]
 
         y = cy + 42
         for lbl, val in items:
             surface.blit(f_small.render(lbl, True, TEXT_MUTED), (cx + 14, y))
-            val_col = ACCENT_GREEN if ("Dedicated" in val or "FPS" in val or "vis" in val) else (ACCENT_CYAN if "Tier" in lbl else TEXT_PRIMARY)
+            val_col = ACCENT_GREEN if ("Dedicated" in val or "FPS" in val or "draw" in val) else (ACCENT_CYAN if "Tier" in lbl else TEXT_PRIMARY)
             surface.blit(f_small.render(val, True, val_col), (cx + 125, y))
             y += 22

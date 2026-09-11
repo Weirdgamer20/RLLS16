@@ -12,7 +12,7 @@ from .shaders import (
 )
 from .math3d import (
     identity, translate, scale, rotate_x, rotate_y, rotate_z,
-    mat4_mul, normalize
+    mat4_mul, normalize, extract_frustum_planes
 )
 from .quadtree import LODManager
 from .terrain_tile import TerrainTilePool, build_tile_mesh_data
@@ -242,15 +242,29 @@ class EarthRenderer:
         # Active Tier & Visual Debug Mode
         self.tier = EarthTier.HIGH_DETAIL_CUBESPHERE
         self.debug_mode = 0  # 0: Normal
+        self.render_distance: float | None = 6.0  # Configurable Chunk Streaming distance (None = Ultra/Horizon)
 
         # Live performance telemetry
         self.telemetry = {
             "rendered_tiles": 0,
             "visible_nodes": 0,
+            "culled_nodes": 0,
             "tier_in_use": EarthTier.HIGH_DETAIL_CUBESPHERE,
             "max_active_lod": 0,
             "upload_queue": 0,
+            "gpu_cache_size": 0,
+            "cpu_cache_size": 0,
+            "free_pool_size": 0,
+            "cache_hits_gpu": 0,
+            "cache_hits_cpu": 0,
+            "reused_buffers": 0,
+            "vram_mb": 0.0,
+            "render_distance": 6.0,
         }
+
+    @property
+    def active_tier_name(self) -> str:
+        return str(self.tier)
 
         # Point 1: Mandatory Earth render diagnostic mode
         self.run_startup_diagnostic()
@@ -381,10 +395,15 @@ class EarthRenderer:
 
                 if self.tier == EarthTier.HIGH_DETAIL_CUBESPHERE:
                     cam_pos_f64 = camera.get_eye_pos_f64() if hasattr(camera, 'get_eye_pos_f64') else np.asarray(eye_pos, dtype=np.float64)
+                    # Extract view-projection frustum planes for active frustum culling
+                    vp = mat4_mul(proj, view)
+                    frustum_planes = extract_frustum_planes(vp)
                     visible_nodes = self.lod_manager.update(
                         cam_pos_f64, earth_pos, radius=earth_radius,
                         earth_rot_angle=earth_rot_angle, axial_tilt=axial_tilt,
-                        fovy_deg=camera.fovy, viewport_height=height
+                        fovy_deg=camera.fovy, viewport_height=height,
+                        frustum_planes=frustum_planes,
+                        render_distance=self.render_distance
                     )
                 else:
                     visible_nodes = self.lod_manager.roots
@@ -451,9 +470,18 @@ class EarthRenderer:
         self.telemetry = {
             "rendered_tiles": rendered_count,
             "visible_nodes": len(visible_nodes) if visible_nodes else 1,
+            "culled_nodes": getattr(self.lod_manager, "culled_node_count", 0),
             "tier_in_use": tier_used,
             "max_active_lod": current_max_lod,
             "upload_queue": self.tile_pool.ready_cpu_meshes.qsize(),
+            "gpu_cache_size": len(self.tile_pool.gpu_cache),
+            "cpu_cache_size": len(self.tile_pool.cpu_cache),
+            "free_pool_size": len(self.tile_pool.free_buffer_pool),
+            "cache_hits_gpu": self.tile_pool.cache_hits_gpu,
+            "cache_hits_cpu": self.tile_pool.cache_hits_cpu,
+            "reused_buffers": self.tile_pool.reused_buffers_count,
+            "vram_mb": len(self.tile_pool.gpu_cache) * 0.022,
+            "render_distance": self.render_distance,
         }
 
 
@@ -510,6 +538,18 @@ class SceneRenderer:
         self.show_grid = False
         self.show_clouds = True
         self.show_atmo = True
+
+    @property
+    def telemetry(self) -> dict:
+        return self.earth_renderer.telemetry
+
+    @property
+    def render_distance(self) -> float | None:
+        return self.earth_renderer.render_distance
+
+    @render_distance.setter
+    def render_distance(self, value: float | None):
+        self.earth_renderer.render_distance = value
 
     def resize(self, width: int, height: int):
         self.width = max(100, width)
@@ -683,6 +723,9 @@ class SceneRenderer:
         solar_irradiance: float = 1.0,
         ui_surface = None,
     ):
+        if hasattr(camera, 'set_world_data') and getattr(camera, 'world_data', None) is None:
+            camera.set_world_data(self.world_data)
+
         # Clear framebuffer
         self.ctx.clear(0.01, 0.015, 0.03, 1.0)
         self.ctx.enable(moderngl.DEPTH_TEST)

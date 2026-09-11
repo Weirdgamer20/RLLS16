@@ -201,3 +201,87 @@ def camera_relative_model_view(
     m[0:3, 3] = rel_pos
     return m
 
+
+def extract_frustum_planes(view_proj: np.ndarray) -> np.ndarray:
+    """
+    Extract the 6 view-projection frustum planes in normalized form:
+    planes[i] = [A, B, C, D] where A*x + B*y + C*z + D = 0.
+    Order: 0: Left, 1: Right, 2: Bottom, 3: Top, 4: Near, 5: Far.
+    Points inside the frustum have dot(plane[:3], p) + plane[3] >= 0.
+    """
+    m = np.asarray(view_proj, dtype=np.float32)
+    planes = np.zeros((6, 4), dtype=np.float32)
+
+    # Left: row 3 + row 0
+    planes[0] = m[3] + m[0]
+    # Right: row 3 - row 0
+    planes[1] = m[3] - m[0]
+    # Bottom: row 3 + row 1
+    planes[2] = m[3] + m[1]
+    # Top: row 3 - row 1
+    planes[3] = m[3] - m[1]
+    # Near: row 3 + row 2
+    planes[4] = m[3] + m[2]
+    # Far: row 3 - row 2
+    planes[5] = m[3] - m[2]
+
+    # Normalize plane normals
+    lengths = np.linalg.norm(planes[:, :3], axis=1, keepdims=True)
+    lengths = np.where(lengths < 1e-12, 1.0, lengths)
+    planes /= lengths
+    return planes
+
+
+def sphere_in_frustum(center: np.ndarray, radius: float, planes: np.ndarray | list) -> bool:
+    """
+    Test if a bounding sphere is inside or intersecting the view frustum.
+    Returns False if strictly outside any of the 6 planes.
+    """
+    if planes is None or len(planes) == 0:
+        return True
+    c = np.asarray(center, dtype=np.float32)
+    r = float(radius)
+    for p in planes:
+        dist = float(p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3])
+        if dist < -r:
+            return False
+    return True
+
+
+def sample_terrain_altitude(lat: float, lon: float, world_data: dict, radius: float = 5.0, terrain_amp: float = 0.35) -> float:
+    """
+    Sample continuous terrain surface radius at given latitude and longitude.
+    """
+    if "elevation" not in world_data:
+        return radius
+    elev_field = world_data["elevation"]
+    h, w = elev_field.shape
+    fy = (lat + (math.pi / 2.0)) / math.pi * (h - 1)
+    fx = (lon + math.pi) / (2.0 * math.pi) * w
+
+    y0 = max(0, min(h - 1, int(math.floor(fy))))
+    y1 = max(0, min(h - 1, y0 + 1))
+    x0 = int(math.floor(fx)) % w
+    x1 = (x0 + 1) % w
+
+    ty = fy - math.floor(fy)
+    tx = fx - math.floor(fx)
+
+    v00 = float(elev_field[y0, x0])
+    v10 = float(elev_field[y0, x1])
+    v01 = float(elev_field[y1, x0])
+    v11 = float(elev_field[y1, x1])
+
+    # If quantized uint16, convert to [0, 1]
+    if v00 > 1.5 or v10 > 1.5:
+        v00 /= 65535.0
+        v10 /= 65535.0
+        v01 /= 65535.0
+        v11 /= 65535.0
+
+    top = v00 * (1.0 - tx) + v10 * tx
+    bottom = v01 * (1.0 - tx) + v11 * tx
+    elev = top * (1.0 - ty) + bottom * ty
+
+    return radius + (elev - 0.50) * terrain_amp
+

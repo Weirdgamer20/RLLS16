@@ -73,14 +73,47 @@ def build_tile_mesh_data(
         refinement_scale = (0.04 / (2 ** (node.level - 1)))
         elev += (detail - 0.5) * refinement_scale * land_factor
 
+        # Deep zoom: add high-frequency micro crags and ridges on land
+        if node.level >= 5:
+            hx = sphere_pts[..., 0] * (16.0 * (2 ** (node.level - 4)))
+            hy = sphere_pts[..., 1] * (16.0 * (2 ** (node.level - 4)))
+            micro = fbm_2d(hx, hy, seed=32003 + node.level, base_grid=2.0, octaves=2)
+            micro_scale = (0.012 / (2 ** (node.level - 1)))
+            elev += (micro - 0.5) * micro_scale * land_factor
+
     # 5. Radial vertex displacement
     # Sea level is at elevation 0.50
     # Oceans have slight bathymetry, land rises above radius
     displaced_radius = radius + (elev - 0.50) * terrain_amp
     positions = sphere_pts * displaced_radius[..., None] # (grid_size, grid_size, 3)
 
-    # 6. Normals (approximate radial + terrain gradient)
-    normals = sphere_pts.copy() # base radial normals
+    # 6. High-detail surface normals via central differences of displaced mesh
+    dv = np.zeros_like(positions)
+    du = np.zeros_like(positions)
+
+    dv[1:-1, :] = positions[2:, :] - positions[:-2, :]
+    dv[0, :] = (positions[1, :] - positions[0, :]) * 2.0
+    dv[-1, :] = (positions[-1, :] - positions[-2, :]) * 2.0
+
+    du[:, 1:-1] = positions[:, 2:] - positions[:, :-2]
+    du[:, 0] = (positions[:, 1] - positions[:, 0]) * 2.0
+    du[:, -1] = (positions[:, -1] - positions[:, -2]) * 2.0
+
+    computed_normals = np.cross(du, dv)
+    dots = np.sum(computed_normals * sphere_pts, axis=-1, keepdims=True)
+    sign = np.where(dots < 0.0, -1.0, 1.0)
+    computed_normals = computed_normals * sign
+
+    norm_len = np.linalg.norm(computed_normals, axis=-1, keepdims=True)
+    computed_normals = np.where(norm_len > 1e-12, computed_normals / norm_len, sphere_pts)
+
+    if node.level <= 1:
+        blend = 0.35 + 0.35 * node.level
+        normals = sphere_pts * (1.0 - blend) + computed_normals * blend
+        n_len = np.linalg.norm(normals, axis=-1, keepdims=True)
+        normals = np.where(n_len > 1e-12, normals / n_len, sphere_pts)
+    else:
+        normals = computed_normals
 
     # 7. Normalized UVs for texture / shader mapping
     u_tex = (lon + math.pi) / (2.0 * math.pi)
@@ -133,7 +166,6 @@ def build_tile_mesh_data(
     edge_indices_left = [i * grid_size for i in range(grid_size)]
     edge_indices_right = [i * grid_size + (grid_size - 1) for i in range(grid_size)]
 
-    # Edges ordered around perimeter
     all_edges = [
         edge_indices_top,
         edge_indices_right,
@@ -162,7 +194,6 @@ def build_tile_mesh_data(
             s1 = curr_skirt_idx + 1
             curr_skirt_idx += 2
 
-            # Determine skirt winding facing away from tile center
             p0 = v0[:3]
             p1 = v1[:3]
             ps0 = skirt_v0[:3]
@@ -184,7 +215,7 @@ def build_tile_mesh_data(
 
 
 class TerrainTile:
-    """Represents an active GPU-buffered terrain tile."""
+    """Represents an active GPU-buffered terrain tile with support for buffer reuse."""
     __slots__ = ('node_key', 'vbo', 'ibo', 'vao', 'vertex_count', 'index_count', 'last_used_frame')
 
     def __init__(self, ctx: moderngl.Context, prog: moderngl.Program, vertices: np.ndarray, indices: np.ndarray, key: str):
@@ -196,8 +227,6 @@ class TerrainTile:
         self.vbo = ctx.buffer(vertices.tobytes())
         self.ibo = ctx.buffer(indices.tobytes())
 
-        # Vertex format:
-        # 3f (position) 3f (normal) 2f (uv) 2f (elev, land_mask) = 10 floats = 40 bytes
         self.vao = ctx.vertex_array(
             prog,
             [
@@ -206,6 +235,27 @@ class TerrainTile:
             index_buffer=self.ibo,
             index_element_size=4,
         )
+
+    def update_data(self, vertices: np.ndarray, indices: np.ndarray, key: str):
+        """Reuse existing GPU buffer without reallocation if sizes match."""
+        self.node_key = key
+        self.last_used_frame = 0
+        self.vertex_count = len(vertices)
+        self.index_count = len(indices)
+
+        v_bytes = vertices.tobytes()
+        if len(v_bytes) == self.vbo.size:
+            self.vbo.write(v_bytes)
+        else:
+            self.vbo.orphan(len(v_bytes))
+            self.vbo.write(v_bytes)
+
+        i_bytes = indices.tobytes()
+        if len(i_bytes) == self.ibo.size:
+            self.ibo.write(i_bytes)
+        else:
+            self.ibo.orphan(len(i_bytes))
+            self.ibo.write(i_bytes)
 
     def release(self):
         try:
@@ -222,30 +272,59 @@ import queue
 
 class TerrainTilePool:
     """
-    LRU GPU and CPU mesh pool for Quadtree terrain tiles (Points 9, 10, 46, 47).
-    Decouples background CPU mesh generation from main-thread GPU VBO upload queue.
+    Minecraft-inspired chunk streaming pool with multi-tier caching and GPU buffer recycling:
+    1. Active GPU Set: Currently rendered tiles in view frustum.
+    2. GPU Cache & Recycled Buffer Pool: High-speed GPU cache with buffer reuse on eviction.
+    3. CPU RAM Cache: Authoritative chunk geometry cached in RAM to restore visited areas with zero regeneration.
+    4. Strict Per-Frame Budgeting: Never blocks the render loop.
     """
 
-    def __init__(self, ctx: moderngl.Context, max_gpu_cached: int = 384, max_cpu_cached: int = 768):
+    def __init__(self, ctx: moderngl.Context, max_gpu_cached: int = 512, max_cpu_cached: int = 2048):
         self.ctx = ctx
         self.max_gpu_cached = max_gpu_cached
         self.max_cpu_cached = max_cpu_cached
         self.gpu_cache = OrderedDict()
         self.cpu_cache = OrderedDict()
+        self.free_buffer_pool = []  # Recycled TerrainTile objects ready for reuse
+        self.max_pool_size = 128
         self.pending_tasks = set()
         self.ready_cpu_meshes = queue.Queue()
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="TerrainWorker")
+        self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="TerrainChunkWorker")
         self.current_frame = 0
+
+        # Telemetry metrics
+        self.cache_hits_gpu = 0
+        self.cache_hits_cpu = 0
+        self.reused_buffers_count = 0
+        self.total_generated_count = 0
+        self.frame_uploads = 0
 
     def _worker_build_mesh(self, node, world_data: dict, grid_size: int, radius: float):
         try:
             verts, indices = build_tile_mesh_data(node, world_data, grid_size=grid_size, radius=radius)
             self.ready_cpu_meshes.put((node.key, verts, indices))
         except Exception as e:
-            print(f"[TerrainTilePool] Worker error on tile {node.key}: {e}")
+            print(f"[TerrainTilePool] Worker error on chunk {node.key}: {e}")
+
+    def _acquire_or_create_tile(self, prog: moderngl.Program, verts: np.ndarray, indices: np.ndarray, key: str) -> TerrainTile:
+        """Acquire a recycled GPU tile from pool if available, else instantiate a new one."""
+        if self.free_buffer_pool:
+            tile = self.free_buffer_pool.pop()
+            tile.update_data(verts, indices, key)
+            self.reused_buffers_count += 1
+            return tile
+        return TerrainTile(self.ctx, prog, verts, indices, key)
+
+    def _evict_oldest_gpu_tile(self):
+        """Evict least-recently-used GPU tile into free buffer pool for recycling."""
+        _, oldest_tile = self.gpu_cache.popitem(last=False)
+        if len(self.free_buffer_pool) < self.max_pool_size:
+            self.free_buffer_pool.append(oldest_tile)
+        else:
+            oldest_tile.release()
 
     def process_ready_uploads(self, prog: moderngl.Program, max_uploads: int = 6):
-        """Process ready CPU meshes on the main render thread (Point 10)."""
+        """Process ready CPU meshes on the main render thread with strict work budget."""
         count = 0
         while count < max_uploads and not self.ready_cpu_meshes.empty():
             try:
@@ -253,56 +332,64 @@ class TerrainTilePool:
                 if key in self.pending_tasks:
                     self.pending_tasks.remove(key)
 
-                # Store in CPU cache
+                # Store in CPU RAM cache (never discard data on render distance exit)
                 self.cpu_cache[key] = (verts, indices)
                 if len(self.cpu_cache) > self.max_cpu_cached:
                     self.cpu_cache.popitem(last=False)
 
-                # Upload to GPU
+                # Upload to GPU using recycled buffer if possible
                 if key not in self.gpu_cache:
                     while len(self.gpu_cache) >= self.max_gpu_cached:
-                        _, oldest_tile = self.gpu_cache.popitem(last=False)
-                        oldest_tile.release()
-                    tile = TerrainTile(self.ctx, prog, verts, indices, key)
+                        self._evict_oldest_gpu_tile()
+
+                    tile = self._acquire_or_create_tile(prog, verts, indices, key)
                     tile.last_used_frame = self.current_frame
                     self.gpu_cache[key] = tile
+
                 count += 1
             except queue.Empty:
                 break
+        self.frame_uploads = count
 
     def get_or_create(self, node, world_data: dict, prog: moderngl.Program, radius: float = 5.0) -> TerrainTile | None:
         key = node.key
 
-        # 1. Hit in GPU cache
+        # 1. Hit in GPU cache (Tier 1 & 2)
         if key in self.gpu_cache:
             tile = self.gpu_cache[key]
             tile.last_used_frame = self.current_frame
             self.gpu_cache.move_to_end(key)
+            self.cache_hits_gpu += 1
             return tile
 
-        # 2. Hit in CPU cache -> immediate upload
+        # 2. Hit in CPU RAM cache (Tier 3: zero regeneration!)
         if key in self.cpu_cache:
             verts, indices = self.cpu_cache[key]
             while len(self.gpu_cache) >= self.max_gpu_cached:
-                _, oldest = self.gpu_cache.popitem(last=False)
-                oldest.release()
-            tile = TerrainTile(self.ctx, prog, verts, indices, key)
+                self._evict_oldest_gpu_tile()
+
+            tile = self._acquire_or_create_tile(prog, verts, indices, key)
             tile.last_used_frame = self.current_frame
             self.gpu_cache[key] = tile
+            self.cache_hits_cpu += 1
             return tile
 
         # 3. If LOD 0 (root tiles), generate synchronously to guarantee baseline rendering
         if node.level == 0:
             verts, indices = build_tile_mesh_data(node, world_data, grid_size=16, radius=radius)
+            self.total_generated_count += 1
             self.cpu_cache[key] = (verts, indices)
-            tile = TerrainTile(self.ctx, prog, verts, indices, key)
+            while len(self.gpu_cache) >= self.max_gpu_cached:
+                self._evict_oldest_gpu_tile()
+            tile = self._acquire_or_create_tile(prog, verts, indices, key)
             tile.last_used_frame = self.current_frame
             self.gpu_cache[key] = tile
             return tile
 
-        # 4. Deep LOD -> enqueue to worker thread (Point 9)
+        # 4. Deep LOD -> enqueue to worker thread (asynchronous streaming)
         if key not in self.pending_tasks:
             self.pending_tasks.add(key)
+            self.total_generated_count += 1
             self.executor.submit(self._worker_build_mesh, node, world_data, 16, radius)
 
         return None
@@ -314,6 +401,9 @@ class TerrainTilePool:
         self.executor.shutdown(wait=False)
         for tile in self.gpu_cache.values():
             tile.release()
+        for tile in self.free_buffer_pool:
+            tile.release()
         self.gpu_cache.clear()
+        self.free_buffer_pool.clear()
         self.cpu_cache.clear()
 

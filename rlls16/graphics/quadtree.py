@@ -66,18 +66,24 @@ class QuadtreeNode:
 class LODManager:
     """
     Coordinates planetary quadtree subdivision with Screen-Space Error (Point 3),
-    LOD Hysteresis (Point 4), Frustum Culling (Point 5), and Model-Space Horizon Culling (Point 6).
+    LOD Hysteresis (Point 4), Frustum Culling (Point 5), Model-Space Horizon Culling (Point 6),
+    and Configurable Chunk Streaming Render Distance.
     """
 
     def __init__(self, max_lod: int = 6, error_threshold: float = 3.5):
+        self.base_max_lod = max_lod
         self.max_lod = max_lod
+        self.error_threshold = error_threshold
         self.split_threshold = 1.0 * error_threshold   # Point 4: 1.0x threshold
-        self.merge_threshold = 0.7 * error_threshold   # Point 4: 0.7x threshold
+        self.merge_threshold = 0.70 * error_threshold  # Point 4: 0.7x threshold
         # Root nodes for each of the 6 cardinal faces
         self.roots = [
             QuadtreeNode(face_id, 0, -1.0, -1.0, 1.0, 1.0)
             for face_id in range(6)
         ]
+        # Active key set from previous frame for load/unload hysteresis
+        self.active_rendered_keys = set()
+        self.culled_node_count = 0
 
     def update(
         self,
@@ -88,7 +94,8 @@ class LODManager:
         axial_tilt: float = math.radians(23.44),
         fovy_deg: float = 45.0,
         viewport_height: int = 768,
-        frustum_planes: list[np.ndarray] | None = None,
+        frustum_planes: list[np.ndarray] | np.ndarray | None = None,
+        render_distance: float | None = None,
     ) -> list[QuadtreeNode]:
         """
         Evaluate LOD across all faces given camera state, Earth orientation, and projection parameters.
@@ -99,21 +106,33 @@ class LODManager:
 
         rel_cam = cam_pos_f64 - planet_pos_f64
         cam_dist = float(np.linalg.norm(rel_cam))
+        altitude = max(0.001, cam_dist - radius)
+
         if cam_dist < 1e-6:
             cam_dir_world = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         else:
             cam_dir_world = rel_cam / cam_dist
 
+        # Dynamically scale allowed max LOD near the ground for deep zoom
+        if altitude < 0.04:
+            effective_max_lod = max(self.base_max_lod, 9)
+        elif altitude < 0.12:
+            effective_max_lod = max(self.base_max_lod, 8)
+        elif altitude < 0.35:
+            effective_max_lod = max(self.base_max_lod, 7)
+        elif altitude < 1.2:
+            effective_max_lod = max(self.base_max_lod, 6)
+        else:
+            effective_max_lod = min(self.base_max_lod, 5)
+
         # Point 6: Transform camera direction into Earth's local model space
         # World to Model: rotate_y(-earth_rot_angle) * rotate_z(axial_tilt)
         cz = math.cos(axial_tilt)
         sz = math.sin(axial_tilt)
-        # R_z(axial_tilt) on rel_cam
         rx = cz * cam_dir_world[0] - sz * cam_dir_world[1]
         ry = sz * cam_dir_world[0] + cz * cam_dir_world[1]
         rz = cam_dir_world[2]
 
-        # R_y(-earth_rot_angle)
         cy = math.cos(-earth_rot_angle)
         sy = math.sin(-earth_rot_angle)
         mx = cy * rx + sy * rz
@@ -124,7 +143,7 @@ class LODManager:
         # Horizon culling angle: max angle visible from planet center
         if cam_dist > radius:
             horizon_dot_limit = -(math.sqrt(max(0.0, 1.0 - (radius * radius) / (cam_dist * cam_dist))))
-            horizon_margin = 0.20
+            horizon_margin = 0.15
         else:
             horizon_dot_limit = -1.0
             horizon_margin = 0.0
@@ -133,70 +152,93 @@ class LODManager:
         fovy_rad = math.radians(fovy_deg)
         proj_scale = (viewport_height * 0.5) / max(1e-4, math.tan(fovy_rad * 0.5))
 
+        # Effective render distance with hysteresis
+        # If not specified, default to generous horizon-aware distance
+        if render_distance is not None and render_distance > 0:
+            effective_render_dist = float(render_distance)
+        else:
+            # Automatic distance based on camera altitude
+            horizon_approx = math.sqrt(max(0.01, 2.0 * radius * altitude + altitude * altitude))
+            effective_render_dist = max(radius * 1.5, cam_dist + horizon_approx * 1.6)
+
+        # Unload distance buffer (25% hysteresis margin)
+        unload_render_dist = effective_render_dist * 1.25
+
+        has_frustum = frustum_planes is not None and len(frustum_planes) > 0
         visible_leaves = []
+        new_active_keys = set()
+        self.culled_node_count = 0
+
+        # Precompute rotation constants for Model -> World transformation
+        cz_neg = math.cos(-axial_tilt)
+        sz_neg = math.sin(-axial_tilt)
+        cy_pos = math.cos(earth_rot_angle)
+        sy_pos = math.sin(earth_rot_angle)
 
         def traverse(node: QuadtreeNode):
             # 1. Horizon Culling Check in Model Space (Point 6)
             dot_cam = float(np.dot(node.center_sphere, cam_dir_model))
             if dot_cam < (horizon_dot_limit - node.bounding_radius - horizon_margin):
+                self.culled_node_count += 1
                 return
 
             # 2. Distance from camera to node surface point in world space
-            # Model space center on sphere
             sc = node.center_sphere
-            # Model to World
-            # R_y(earth_rot_angle) * R_z(-axial_tilt) * sc
-            # First R_z(-axial_tilt)
-            cz_neg = math.cos(-axial_tilt)
-            sz_neg = math.sin(-axial_tilt)
             px = cz_neg * sc[0] - sz_neg * sc[1]
             py = sz_neg * sc[0] + cz_neg * sc[1]
             pz = sc[2]
-            # Then R_y(earth_rot_angle)
-            cy_pos = math.cos(earth_rot_angle)
-            sy_pos = math.sin(earth_rot_angle)
+
             wx = cy_pos * px + sy_pos * pz
             wy = py
             wz = -sy_pos * px + cy_pos * pz
             node_world = planet_pos_f64 + np.array([wx, wy, wz], dtype=np.float64) * radius
-            node_radius_world = radius * node.bounding_radius * 1.15 + 0.5
+
+            # Tighter bounding radius matching actual chord + maximum procedural elevation
+            terrain_margin = min(0.25, 0.03 + 0.35 / (2 ** max(0, node.level - 1)))
+            node_radius_world = radius * node.bounding_radius + terrain_margin
 
             # 3. Frustum Culling Check (Point 5)
-            if frustum_planes:
-                outside = False
+            if has_frustum:
                 for plane in frustum_planes:
-                    dist_to_plane = float(np.dot(plane[:3], node_world) + plane[3])
+                    dist_to_plane = float(plane[0] * node_world[0] + plane[1] * node_world[1] + plane[2] * node_world[2] + plane[3])
                     if dist_to_plane < -node_radius_world:
-                        outside = True
-                        break
-                if outside:
-                    return
+                        self.culled_node_count += 1
+                        return
 
+            # 4. Render Distance & Load/Unload Hysteresis Check
             dist_to_node = float(np.linalg.norm(node_world - cam_pos_f64))
+            dist_surface = max(0.0, dist_to_node - node_radius_world)
 
-            # 4. Screen-Space Error Calculation (Point 3)
+            # Apply hysteresis: if already active last frame, use higher threshold before de-rendering
+            was_active = node.key in self.active_rendered_keys
+            limit = unload_render_dist if was_active else effective_render_dist
+            if dist_surface > limit:
+                self.culled_node_count += 1
+                return
+
+            # 5. Screen-Space Error Calculation (Point 3)
             # Physical chord length
             node_chord = radius * (2.0 / (2 ** node.level))
-            # Surface geometric error estimate (curvature sagitta + terrain relief)
             sagitta = (node_chord * node_chord) / (8.0 * radius)
             geometric_error = sagitta + (0.35 / (2 ** node.level))
-            # Screen-space pixel error
-            projected_error = (geometric_error / max(0.05, dist_to_node)) * proj_scale
+            projected_error = (geometric_error / max(0.01, dist_to_node)) * proj_scale
 
-            # 5. LOD Hysteresis (Point 4)
+            # 6. LOD Hysteresis (Point 4)
             if node.is_leaf:
                 # Approaching: split if projected error exceeds split threshold
-                if projected_error > self.split_threshold and node.level < self.max_lod:
+                if projected_error > self.split_threshold and node.level < effective_max_lod:
                     node.subdivide()
                     for child in node.children:
                         traverse(child)
                 else:
                     visible_leaves.append(node)
+                    new_active_keys.add(node.key)
             else:
                 # Moving away: collapse only if error falls below merge threshold (Point 4)
                 if projected_error < self.merge_threshold:
                     node.collapse()
                     visible_leaves.append(node)
+                    new_active_keys.add(node.key)
                 else:
                     for child in node.children:
                         traverse(child)
@@ -204,4 +246,5 @@ class LODManager:
         for root in self.roots:
             traverse(root)
 
+        self.active_rendered_keys = new_active_keys
         return visible_leaves
