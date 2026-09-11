@@ -593,6 +593,13 @@ class SimulationHUD:
         if world_instance.is_paused:
             sim_speed_str = "PAUSED"
 
+        # Chunk streaming live telemetry for bottom bar
+        telem = renderer.telemetry if renderer else {}
+        chunk_tiles = telem.get("rendered_tiles", 0)
+        chunk_lod = telem.get("max_active_lod", 0)
+        chunk_gpu = telem.get("gpu_cache_size", 0)
+        chunk_ram = telem.get("cpu_cache_size", 0)
+
         status_text = (
             f"DAY {day_num:03d}   |   "
             f"{obs.temperature_c:+.1f}°C   |   "
@@ -600,6 +607,7 @@ class SimulationHUD:
             f"Wind {obs.wind_speed:.1f} m/s   |   "
             f"Rain {rain_str}   |   "
             f"Population {human.population:,}   |   "
+            f"CHUNKS {chunk_tiles} [LOD{chunk_lod}] GPU:{chunk_gpu} RAM:{chunk_ram}   |   "
             f"FPS {fps:.0f}   |   "
             f"SIM {sim_speed_str}"
         )
@@ -853,7 +861,7 @@ class SimulationHUD:
 
     def _render_info_card(self, surface: pygame.Surface, inst, astro: dict, camera, fps: float = 60.0, renderer=None):
         f_title, f_header, f_body, f_small = self.fonts
-        cw, ch = 320, 276
+        cw, ch = 320, 322  # Expanded to fit all 10 telemetry rows
         cx = self.width - 75 - cw
         cy = 56
         card_rect = pygame.Rect(cx, cy, cw, ch)
@@ -876,22 +884,29 @@ class SimulationHUD:
         gpu_cached = telem.get("gpu_cache_size", 0)
         cpu_cached = telem.get("cpu_cache_size", 0)
         reused = telem.get("reused_buffers", 0)
+        upload_q = telem.get("upload_queue", 0)
+        pool_sz = telem.get("free_pool_size", 0)
         frame_ms = 1000.0 / max(1.0, fps)
+        rd = telem.get("render_distance", None)
+        rd_lbl = "Ultra" if rd is None else f"{rd:.1f}u"
 
         items = [
-            ("Central Body", "Sun (Type G2V)"),
-            ("Earth Distance", "1.000 AU (149.6M km)"),
-            ("Moon Phase", f"{math.degrees(astro['moon_rot_angle']):.1f}°"),
-            ("Active GPU", f"{gpu_short[:20]}"),
-            ("Render Rate", f"{fps:.0f} FPS ({frame_ms:.1f} ms)"),
-            ("Active Chunks", f"{vis_tiles} draw / {culled} culled [LOD {cur_lod}]"),
-            ("Chunk Cache", f"GPU:{gpu_cached} | RAM:{cpu_cached} ({reused} reused)"),
-            ("Fall-back Tier", f"{renderer.earth_renderer.active_tier_name if (renderer and hasattr(renderer, 'earth_renderer')) else 'ACTIVE'}"),
+            ("Central Body",    "Sun (Type G2V)"),
+            ("Earth Distance",  "1.000 AU (149.6M km)"),
+            ("Moon Phase",      f"{math.degrees(astro['moon_rot_angle']):.1f}°"),
+            ("Active GPU",      f"{gpu_short[:20]}"),
+            ("Render Rate",     f"{fps:.0f} FPS ({frame_ms:.1f} ms)"),
+            ("Chunk Dist",      rd_lbl),
+            ("Active Chunks",   f"{vis_tiles} draw / {culled} culled [LOD {cur_lod}]"),
+            ("VRAM Resident",   f"{gpu_cached} tiles ({vram_mb:.1f} MB)"),
+            ("Chunk Cache",     f"RAM:{cpu_cached} | Pool:{pool_sz} ({reused} reused)"),
+            ("Upload Queue",    f"{upload_q} pending"),
+            ("Fall-back Tier",  f"{renderer.earth_renderer.active_tier_name if (renderer and hasattr(renderer, 'earth_renderer')) else 'ACTIVE'}"),
         ]
 
         y = cy + 42
         for lbl, val in items:
             surface.blit(f_small.render(lbl, True, TEXT_MUTED), (cx + 14, y))
-            val_col = ACCENT_GREEN if ("Dedicated" in val or "FPS" in val or "draw" in val) else (ACCENT_CYAN if "Tier" in lbl else TEXT_PRIMARY)
+            val_col = ACCENT_GREEN if ("draw" in val or "GPU" in lbl) else (ACCENT_CYAN if ("Tier" in lbl or "Queue" in lbl) else TEXT_PRIMARY)
             surface.blit(f_small.render(val, True, val_col), (cx + 125, y))
             y += 22
