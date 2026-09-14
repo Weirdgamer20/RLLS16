@@ -1,109 +1,120 @@
-# RLLS 16 — 3D Artificial-World Simulation System (v0.3)
+# RLLS 16 — Canonical 2D Earth Observation & Life Simulation Platform (v1.0)
 
-RLLS 16 is a resource-efficient 3D artificial-world simulation desktop system built with a hardware-accelerated OpenGL 3.3 / ModernGL rendering pipeline, an immutable canonical Earth foundation, deterministic astronomical mechanics, and a futuristic simulation workstation interface.
+RLLS 16 is a deterministic, data-driven 2D rectangular Earth observation and life-simulation desktop platform viewed from above ("a watcher observing the world"). It features real geographic baselines from Natural Earth, 13 independent simulation layers, a 120 FPS CPU-based watcher renderer, an orthographic camera with cursor-pinned zoom, coupled Earth-system physics, intelligent beings with homeostasis, and reinforcement learning.
 
 ---
 
 ## Architecture Overview
 
 ```text
-                           +---------------------------+
-                           |       main.py Entry       |
-                           +-------------+-------------+
-                                         |
-                     +-------------------+-------------------+
-                     |                                       |
-           +---------v---------+                   +---------v---------+
-           |    Home Screen    |                   |  Main Simulation  |
-           | (Create/Load Wld) |                   |    Workstation    |
-           +-------------------+                   +---------+---------+
-                                                             |
-                               +-----------------------------+-----------------------------+
-                               |                                                           |
-                     +---------v---------+                                       +---------v---------+
-                     |  3D OpenGL Scene  |                                       | Simulation Engine |
-                     | (ModernGL Native) |                                       |  (Deterministic)  |
-                     +---------+---------+                                       +---------+---------+
-                               |                                                           |
-          +--------------------+--------------------+                                      |
-          |           |        |          |         |                                      |
-     +----v----+ +----v----+ +-v--+   +---v---+ +---v---+                                  |
-     |Starfield| |   Sun   | |Eart|   | Moon  | |Orbits/|                                  |
-     | Skybox  | | (Corona,| |h 3D|   | (Tidal| | Grid  |                                  |
-     | 3K Pts  | | Light)  | |Mesh|   | Orbit)| | Lines |                                  |
-     +---------+ +---------+ +----+   +-------+ +-------+                                  |
-                                                                                           |
-                               +-----------------------------------------------------------+
-                               |
-                     +---------v---------+
-                     | 2D Workstation UI |
-                     | - Top Time Bar    |
-                     | - Left Accordions |
-                     | - Right Nav Tools |
-                     | - Bottom Telemetry|
-                     +-------------------+
+                               +---------------------------+
+                               |       main.py Entry       |
+                               +-------------+-------------+
+                                             |
+                         +-------------------+-------------------+
+                         |                                       |
+               +---------v---------+                   +---------v---------+
+               |    Home Screen    |                   |  Main Simulation  |
+               | (Create/Load Wld) |                   |    Workstation    |
+               +-------------------+                   +---------+---------+
+                                                                 |
+                                   +-----------------------------+-----------------------------+
+                                   |                                                           |
+                         +---------v---------+                                       +---------v---------+
+                         | 2D Map Renderer   |                                       | Simulation Engine |
+                         | (120 FPS Target)  |                                       |  (Deterministic)  |
+                         +---------+---------+                                       +---------+---------+
+                                   |                                                           |
+              +--------------------+--------------------+                                      |
+              |           |        |          |         |                                      |
+         +----v----+ +----v----+ +-v--+   +---v---+ +---v---+                                  |
+         | Spatial | | 13 Map  | |16b |   |Lat/Lon| |Dynamic|                                  |
+         | Chunks  | | Layers  | |Icon|   | Grid  | |Weather|                                  |
+         | Cache   | | (Layers)| |Pack|   | Lines | | Drift |                                  |
+         +---------+ +---------+ +----+   +-------+ +-------+                                  |
+                                                                                               |
+                                   +-----------------------------------------------------------+
+                                   |
+                         +---------v---------+
+                         | 2D Workstation UI |
+                         | - Top Time Bar    |
+                         | - Left Accordions |
+                         | - Right Nav Tools |
+                         | - Bottom Telemetry|
+                         +-------------------+
 ```
 
 ---
 
 ## Key Features
 
-1. **Hardware-Accelerated 3D Space (ModernGL + OpenGL 3.3 Core)**:
-   - Deep-space background with 3,000 deterministic stars and cosmos atmosphere.
-   - 3D Emissive Sun at the origin emitting directional light and corona limb darkening.
-   - 3D Canonical Earth with terrain relief, ocean specular reflections, day/night dynamic terminator, biomes, and translucent rotating cloud layer.
-   - 3D Moon orbiting Earth with tidal locking and realistic lunar regolith shading.
-   - Anti-aliased 3D orbital rings (Earth around Sun, Moon around Earth) and spatial reference grid.
+1. **Deterministic 2D Canonical Earth**:
+   - Derived directly from real Earth datasets (Natural Earth vector layers: land, ocean, coastlines, rivers, lakes).
+   - Equirectangular 2:1 rectangular world format ($512 \times 256$ standard baseline).
+   - Generates offline in ~1.1 seconds with deterministic checksum:
+     `sha256:25d9eaeefbf8d50be9175d3bc07e5d961d4ffeec30cc84202067b486029b41f0`.
 
-2. **Decoupled Architecture**:
-   - **Canonical World**: `worlds/canonical_world.npz` is immutable and generated once.
-   - **Simulation Instances**: Saved under `simulations/<world_name>/world_state.json` containing only instance state (simulation clock, human population, optimal settlement site, mutable environment parameters).
+2. **13 Independent Queryable Simulation Layers**:
+   - `Layer 0`: Ocean / Land mask
+   - `Layer 1`: Elevation (hypsometric relief, sea level = 0.50)
+   - `Layer 2`: Coastlines
+   - `Layer 3`: Rivers & Lakes (Hydrology)
+   - `Layer 4`: Climate
+   - `Layer 5`: Temperature
+   - `Layer 6`: Precipitation
+   - `Layer 7`: Soil Moisture
+   - `Layer 8`: Biomes (14 WWF terrestrial biomes)
+   - `Layer 9`: Vegetation Biomass
+   - `Layer 10`: Wildlife Density
+   - `Layer 11`: Resources
+   - `Layer 12`: Agents Density
 
-3. **Camera & Navigation**:
-   - **Mouse (Primary)**:
-     - Left-click drag: Orbit camera around focus target.
-     - Right/Middle-click drag: Pan camera.
-     - Mouse wheel: Smooth zoom.
-     - Double-click: Ray-cast and smoothly focus Sun, Earth, or Moon.
-   - **Keyboard**:
-     - `W`/`A`/`S`/`D`: Move/pan camera in view plane.
-     - `Q`/`E`: Vertical camera elevation.
-     - `+`/`-`: Zoom in/out.
-     - `F`: Focus Earth/active target.
-     - `Space`: Pause/resume simulation.
-     - `ESC`: Close overlay / reset focus.
+3. **2D Orthographic Watcher Camera**:
+   - **Continuous Zoom**: Smooth zoom range across 6 semantic tiers:
+     `WORLD` (1.0x - 2.5x) → `CONTINENT` (2.5x - 7.0x) → `REGION` (7.0x - 20.0x) → `LOCAL` (20.0x - 50.0x) → `SETTLEMENT` (50.0x - 120.0x) → `AGENT` (>120.0x).
+   - **Cursor-Anchored Stability**: Geographic coordinate directly under cursor remains geographically pinned during mouse wheel zoom (zero drift verified).
+   - Smooth `fly_to` cubic ease-out animation for locating agents.
 
-4. **Right Navigation Toolbar**:
-   - `FOCUS`: Cycle focus between Solar System, Earth, Moon, and Sun.
-   - `EARTH`: Instantly focus Earth.
-   - `ORBIT`: Toggle orbital paths on/off.
-   - `GRID`: Toggle spatial coordinate grid.
-   - `INFO`: Toggle astronomical telemetry HUD card.
-   - `MEASURE`: Distance inspection mode.
-   - `LOCATE`: Vector GPS target crosshair tool that smoothly glides camera to human settlement coordinates.
+4. **120 FPS Target CPU Map Renderer**:
+   - Partitions Earth into 128 spatial tiles with LRU surface cache and viewport culling.
+   - 6 Visual Layer Modes: `NATURAL`, `ELEVATION`, `TEMPERATURE`, `PRECIPITATION`, `BIOMES`, `WATER`.
+   - 16-Bit ecological icons scaled with nearest-neighbor interpolation.
+   - Dynamic cloud drift and lat/lon coordinate grid.
 
-5. **Top Bar & Time Controls**:
-   - Deterministic calendar: `Year 000,001 | Day 001 | 00:00:00`.
-   - Speed multipliers: `[▶ PLAY]`, `[⏸ PAUSE]`, `[1×]`, `[10×]`, `[100×]`, `[1000×]`.
+5. **Intelligent Beings & Multi-Rate Simulation**:
+   - Spawns intelligent beings with vitals (health, energy, hydration, hunger, comfort), memory, and actions.
+   - Deploys populations onto real Earth land coordinates matching chosen habitat.
+   - Gym-compatible 12-dim observation vector and 14 discrete actions with action masking.
 
-6. **Left Hierarchical Panel**:
-   - Collapsible sections: `WORLD`, `WORLD / SPACE`, `EARTH`, `LIFE`, `REINFORCEMENT LEARNING`, `VISUALIZATION`, `DATA & ANALYTICS`.
-   - Interactive environmental sliders for solar irradiance, global temperature offset, cloud cover, and CO2.
-   - Interactive RL goal toggle (`Survive`, `Growth`, `Exploration`, `Culture`).
-
-7. **Coupled Earth-System Simulation Engine**:
-   - **Multi-Rate Scheduler**: Decouples 60 FPS graphics from simulation physics (1 tick = 1 simulated hour; hourly weather, 6-hourly pressure, daily hydrology/demographics, monthly climate aggregation).
-   - **Reduced-Order Physics Solver**: Surface energy balance ($Q_{solar} - Q_{lw} - Q_{latent} - Q_{sensible}$), pressure gradients, Coriolis-deflected horizontal winds, Clausius-Clapeyron moisture advection, and orographic precipitation.
-   - **Human Cognition & Cultural Lore ($H_t = [C, M, K, E, S, B]$)**: Low-initial-knowledge agents, physiological homeostasis, empirical discoveries, social lore transmission across generations, and catastrophic knowledge decay.
-   - **Hierarchical RL Interface**: Standardized 12-dim normalized observation vector, 14 hierarchical discrete actions with dynamic action masking, and multi-objective reward formulations.
+6. **UI & Controls**:
+   - Snapping speed multipliers: `1x`, `2x`, `4x`, `6x`, `8x`, `16x`, `32x`, `64x`, `100x`.
+   - Strict scroll isolation: mouse wheel over UI panels scrolls panel content only; mouse wheel over map zooms camera; scrolling never toggles dropdowns.
+   - Navigation toolbar: `RESET`, `LAYERS`, `LOCATE`, `WEATHER`, `ICONS`, `GRID`, `INFO`.
 
 ---
 
-## How to Run
+## Quick Start
 
-Activate your virtual environment and execute:
+### Installation
 
-```powershell
-# Run the 3D Desktop Application
+```bash
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Running the Application
+
+```bash
+# Launch the desktop simulation workstation
 python main.py
+
+# Launch direct 2D map preview
+python main.py --preview
+
+# Run 10-stage diagnostic suite headlessly
+python main.py --headless-diagnostic
+
+# Run comprehensive 2D test suite
+python tests/test_2d_earth_migration_suite.py
 ```

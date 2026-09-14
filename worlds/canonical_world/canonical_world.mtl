@@ -1,9 +1,0 @@
-# RLLS 16 Canonical World Material
-newmtl Canonical_Earth_Material
-Ka 0.05 0.05 0.05
-Kd 1.00 1.00 1.00
-Ks 0.20 0.20 0.20
-Ns 16.0
-map_Kd textures/albedo.png
-bump textures/normal_map.png
-

@@ -1,0 +1,17 @@
+{
+  "project": "RLLS16",
+  "world_mode": "2D rectangular Earth viewed from above",
+  "visual_style": "16-bit-inspired, crisp pixel edges, limited palette, readable silhouettes",
+  "research_basis": {
+    "physical_map": "Natural Earth 10m physical vectors: land, ocean, coastline, rivers/lakes, reefs, bathymetry and glaciated areas.",
+    "historical_climate": "NOAA NCEI climate reconstructions include temperature, precipitation, vegetation and related variables.",
+    "biodiversity": "GBIF provides species occurrence APIs and downloads; use as ecological evidence rather than direct population density.",
+    "biomes": "WWF Terrestrial Ecoregions: 867 terrestrial ecoregions across 14 biomes."
+  },
+  "asset_rules": [
+    "No gradients in core UI assets",
+    "Nearest-neighbor scaling for raster exports",
+    "Legible at 16x16 and 24x24",
+    "Icons are overlays/markers, not replacements for simulation data"
+  ]
+}

@@ -10,14 +10,16 @@ from .theme import (
     get_fonts, draw_panel, draw_button
 )
 
-# Canonical 6 initial environments (Point 36)
+# Canonical initial environments (deploy locations)
 INITIAL_ENVIRONMENTS = [
-    "Coastal",
+    "Temperate",
     "Forest",
+    "Grassland",
     "Savannah",
     "Desert",
-    "Mountain",
     "Tundra",
+    "Mountain",
+    "Coastal",
 ]
 
 RL_GOALS = ["Survive", "Growth", "Exploration", "Culture"]
@@ -44,21 +46,21 @@ class HomeScreen:
         # Create World Modal fields
         self.input_world_name = "World - 001"
         self.input_population = "1000"
-        self.selected_env_idx = 0  # Coastal
+        self.selected_env_idx = 0  # Temperate
         self.selected_rl_goal_idx = 0  # Survive
         self.rl_learning_enabled = True
         self.active_input = None   # 'name' or 'pop'
 
-        # Loading progress state (Point 38)
+        # Loading progress state
         self.loading_start_time = 0.0
         self.loading_payload = None
         self.loading_stages = [
-            "Loading canonical Earth",
-            "Loading atmosphere",
-            "Initializing Sun/Earth/Moon",
-            "Initializing population",
-            "Building terrain cache",
-            "Preparing renderer",
+            "Loading canonical 2D Earth",
+            "Initializing environmental layers",
+            "Configuring coupled climate & hydrology",
+            "Spawning intelligent beings",
+            "Building spatial chunk cache",
+            "Preparing 2D watcher renderer",
             "Entering world",
         ]
 

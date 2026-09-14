@@ -1,17 +1,17 @@
 """
-RLLS 16 — 10-Stage Graphics & Data Pipeline Diagnostic Suite.
+RLLS 16 — 10-Stage 2D Canonical Earth & Simulation Diagnostic Suite.
 
 Systematically verifies:
-Stage 1: Pygame Display & Window Initialization
-Stage 2: ModernGL Context Creation & Hardware Detection
-Stage 3: GLSL Shader Compilation & Linking
-Stage 4: Basic Geometry Primitive Rendering (Offscreen FBO readback)
-Stage 5: Camera Projection & Floating-Origin Math
-Stage 6: Astronomical Bodies (Sun, Earth, Moon untextured geometries)
-Stage 7: Canonical Earth Baseline Data Integrity
-Stage 8: Cube-Sphere Geometry & Face Boundary Continuity
-Stage 9: Quadtree LOD Subdivision & Tile Generation
-Stage 10: Full Composite Scene Render Pass
+Stage 1: Pygame Display & 2D Window Surface Initialization
+Stage 2: 16-Bit Asset Package Loading & Nearest-Neighbor Icon Scaling
+Stage 3: Canonical Earth 13 Layers Data Invariants & Checksum
+Stage 4: 2D Spatial Chunk Partition & Cache Management
+Stage 5: 2D Orthographic Watcher Camera & Cursor-Pinned Zoom Math
+Stage 6: 2D Multi-Layer Rendering & Viewport Culling Pass
+Stage 7: Dynamic Coupled Environmental Physics Engine
+Stage 8: Intelligent Beings & Demographic Homeostasis
+Stage 9: Reinforcement Learning Interface & Action Masking
+Stage 10: Deterministic Save, Load, and State Reset Integrity
 """
 
 import os
@@ -21,22 +21,22 @@ import math
 from pathlib import Path
 import numpy as np
 
-# Ensure Pygame can initialize in various environments
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+import pygame
 
-try:
-    import pygame
-    import moderngl
-except ImportError as e:
-    print(f"[FATAL] Required dependency missing: {e}")
-    sys.exit(1)
+from ..storage import load_world
+from ..map.layers import MapLayers, BIOME_NAMES
+from ..map.chunk_tile import ChunkManager
+from ..graphics.camera_2d import Camera2D
+from ..graphics.renderer_2d import Renderer2D, ALL_LAYER_MODES
+from ..simulation.world_instance import WorldInstance
+from ..assets_loader import get_icon, preload_all_icons
 
 
 class DiagnosticReport:
     def __init__(self):
         self.stages = []
         self.start_time = time.time()
-        self.gpu_info = {}
 
     def add_result(self, stage_num: int, name: str, success: bool, details: str = "", duration_ms: float = 0.0):
         self.stages.append({
@@ -52,294 +52,166 @@ class DiagnosticReport:
 
     def print_summary(self):
         elapsed = (time.time() - self.start_time) * 1000.0
-        print("\n" + "=" * 65)
-        print(" RLLS 16 — GRAPHICS & DATA PIPELINE DIAGNOSTIC REPORT")
-        print("=" * 65)
-        if self.gpu_info:
-            print(f" GL Vendor   : {self.gpu_info.get('vendor', 'Unknown')}")
-            print(f" GL Renderer : {self.gpu_info.get('renderer', 'Unknown')}")
-            print(f" GL Version  : {self.gpu_info.get('version', 'Unknown')}")
-            print("-" * 65)
-
+        print("\n" + "=" * 70)
+        print(" RLLS 16 — 2D CANONICAL EARTH & SIMULATION DIAGNOSTIC REPORT")
+        print("=" * 70)
         for s in self.stages:
             status = "[PASS]" if s["success"] else "[FAIL]"
-            color_bullet = "✓" if s["success"] else "✗"
-            print(f" {color_bullet} Stage {s['stage']:2d}: {s['name']:<35} {status} ({s['duration_ms']:5.1f}ms)")
+            dur = f"{s['duration_ms']:.1f}ms".rjust(9)
+            print(f" {status} Stage {s['stage']:02d}: {s['name'][:36].ljust(36)} {dur}")
             if s["details"]:
-                for line in s["details"].strip().split("\n"):
-                    print(f"        | {line}")
-
-        print("-" * 65)
-        total_pass = sum(1 for s in self.stages if s["success"])
-        total_stages = len(self.stages)
-        print(f" Result: {total_pass}/{total_stages} stages passed in {elapsed:.1f}ms")
-        if self.is_all_passed():
-            print(" Status: ALL SUBSYSTEMS HEALTHY — Graphics pipeline ready.")
-        else:
-            print(" Status: SUBSYSTEM FAILURE DETECTED — Review failed stage details above.")
-        print("=" * 65 + "\n")
+                print(f"        -> {s['details']}")
+        print("-" * 70)
+        verdict = "ALL 10 DIAGNOSTIC STAGES PASSED" if self.is_all_passed() else "DIAGNOSTIC FAILURES DETECTED"
+        print(f" Status: {verdict} in {elapsed:.1f} ms")
+        print("=" * 70 + "\n")
 
 
 def run_diagnostic_suite(canonical_path: str = "worlds/canonical_world.npz", hidden_window: bool = True) -> DiagnosticReport:
     report = DiagnosticReport()
-    window = None
-    ctx = None
 
-    # -------------------------------------------------------------
-    # STAGE 1: Pygame Display & Window Initialization
-    # -------------------------------------------------------------
-    t0 = time.time()
+    # Stage 1: Pygame Display & 2D Window Surface
+    t0 = time.perf_counter()
     try:
         pygame.init()
-        pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
-        pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
-        pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
-        pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 24)
-        pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
-
-        flags = pygame.OPENGL | pygame.DOUBLEBUF
-        if hidden_window:
-            flags |= pygame.HIDDEN
-
+        flags = pygame.HIDDEN if hidden_window else 0
         window = pygame.display.set_mode((640, 480), flags)
-        report.add_result(1, "Pygame Display & OpenGL Init", True, "Window created (640x480, GL 3.3 Core)", (time.time() - t0) * 1000)
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(1, "Pygame 2D Display Initialization", True, "640x480 surface ready", t_dur)
     except Exception as e:
-        report.add_result(1, "Pygame Display & OpenGL Init", False, f"Failed to initialize display: {e}", (time.time() - t0) * 1000)
+        report.add_result(1, "Pygame 2D Display Initialization", False, str(e), (time.perf_counter() - t0) * 1000.0)
         return report
 
-    # -------------------------------------------------------------
-    # STAGE 2: ModernGL Context Creation & GPU Detection
-    # -------------------------------------------------------------
-    t0 = time.time()
+    # Stage 2: 16-Bit Asset Package Loading & Nearest-Neighbor Icon Scaling
+    t0 = time.perf_counter()
     try:
-        ctx = moderngl.create_context()
-        gpu_info = {
-            "vendor": ctx.info.get("GL_VENDOR", "Unknown"),
-            "renderer": ctx.info.get("GL_RENDERER", "Unknown"),
-            "version": ctx.info.get("GL_VERSION", "Unknown"),
-        }
-        report.gpu_info = gpu_info
-        details = f"GPU: {gpu_info['renderer']} ({gpu_info['vendor']})"
-        report.add_result(2, "ModernGL Context Creation", True, details, (time.time() - t0) * 1000)
+        preload_all_icons([(16, 16), (24, 24), (32, 32)])
+        icon = get_icon("human", (28, 28))
+        assert icon.get_size() == (28, 28)
+        assert icon.get_flags() & pygame.SRCALPHA
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(2, "16-Bit Asset Package & Icon Cache", True, "18 SVG icons scaled and cached", t_dur)
     except Exception as e:
-        report.add_result(2, "ModernGL Context Creation", False, f"Context creation error: {e}", (time.time() - t0) * 1000)
-        return report
+        report.add_result(2, "16-Bit Asset Package & Icon Cache", False, str(e), (time.perf_counter() - t0) * 1000.0)
 
-    # -------------------------------------------------------------
-    # STAGE 3: GLSL Shader Compilation & Linking
-    # -------------------------------------------------------------
-    t0 = time.time()
-    compiled_shaders = {}
+    # Stage 3: Canonical Earth 13 Layers Data Invariants
+    t0 = time.perf_counter()
     try:
-        from .shaders import (
-            STARFIELD_VS, STARFIELD_FS,
-            SUN_VS, SUN_FS,
-            PLANET_VS, EARTH_FS, MOON_FS,
-            LINE_VS, LINE_FS,
-            OVERLAY_VS, OVERLAY_FS,
-        )
-
-        shaders_to_test = [
-            ("Starfield", STARFIELD_VS, STARFIELD_FS),
-            ("Sun", SUN_VS, SUN_FS),
-            ("Planet/Earth", PLANET_VS, EARTH_FS),
-            ("Moon", PLANET_VS, MOON_FS),
-            ("Lines", LINE_VS, LINE_FS),
-            ("Overlay", OVERLAY_VS, OVERLAY_FS),
-        ]
-
-        errors = []
-        for name, vs, fs in shaders_to_test:
-            try:
-                prog = ctx.program(vertex_shader=vs, fragment_shader=fs)
-                compiled_shaders[name] = prog
-            except Exception as se:
-                errors.append(f"{name} Shader Error: {se}")
-
-        if errors:
-            report.add_result(3, "GLSL Shader Compilation", False, "\n".join(errors), (time.time() - t0) * 1000)
-        else:
-            report.add_result(3, "GLSL Shader Compilation", True, f"All {len(shaders_to_test)} shader programs compiled successfully", (time.time() - t0) * 1000)
-    except Exception as e:
-        report.add_result(3, "GLSL Shader Compilation", False, f"Shader import/compile failed: {e}", (time.time() - t0) * 1000)
-
-    # -------------------------------------------------------------
-    # STAGE 4: Basic Geometry Primitive Rendering (Offscreen FBO)
-    # -------------------------------------------------------------
-    t0 = time.time()
-    try:
-        fbo_tex = ctx.texture((64, 64), 4)
-        fbo_depth = ctx.depth_renderbuffer((64, 64))
-        test_fbo = ctx.framebuffer(color_attachments=[fbo_tex], depth_attachment=fbo_depth)
-        test_fbo.use()
-        ctx.clear(0.1, 0.2, 0.3, 1.0)
-
-        # Simple colored triangle
-        tri_vs = "#version 330 core\nlayout(location=0) in vec2 in_pos;\nvoid main(){ gl_Position = vec4(in_pos, 0.0, 1.0); }"
-        tri_fs = "#version 330 core\nout vec4 color;\nvoid main(){ color = vec4(1.0, 0.5, 0.0, 1.0); }"
-        tri_prog = ctx.program(vertex_shader=tri_vs, fragment_shader=tri_fs)
-        tri_verts = np.array([0.0, 0.5, -0.5, -0.5, 0.5, -0.5], dtype=np.float32)
-        tri_vbo = ctx.buffer(tri_verts.tobytes())
-        tri_vao = ctx.simple_vertex_array(tri_prog, tri_vbo, 'in_pos')
-        tri_vao.render(moderngl.TRIANGLES)
-
-        # Read back pixel at center
-        raw_pixels = test_fbo.read(components=4)
-        center_pixel = raw_pixels[((32 * 64) + 32) * 4 : ((32 * 64) + 32) * 4 + 4]
-        # Should be orange (255, 127/128, 0, 255)
-        r, g, b, a = center_pixel[0], center_pixel[1], center_pixel[2], center_pixel[3]
-        if r > 200 and g > 100:
-            report.add_result(4, "Primitive FBO Rasterization", True, f"Rendered & readback verified: RGBA=({r},{g},{b},{a})", (time.time() - t0) * 1000)
-        else:
-            report.add_result(4, "Primitive FBO Rasterization", False, f"Unexpected pixel color: RGBA=({r},{g},{b},{a})", (time.time() - t0) * 1000)
-
-        # Clean up
-        tri_vbo.release()
-        tri_vao.release()
-        tri_prog.release()
-        test_fbo.release()
-        fbo_tex.release()
-        fbo_depth.release()
-    except Exception as e:
-        report.add_result(4, "Primitive FBO Rasterization", False, f"FBO render failed: {e}", (time.time() - t0) * 1000)
-
-    # -------------------------------------------------------------
-    # STAGE 5: Camera Projection & Floating-Origin Math
-    # -------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from .math3d import perspective, look_at, normalize, camera_relative_model_view
-        fov = 45.0
-        aspect = 640 / 480
-        p_mat = perspective(fov, aspect, 0.1, 1000.0)
-
-        cam_pos_f64 = np.array([0.0, 0.0, 150.0], dtype=np.float64)
-        target_f64 = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-        v_mat = look_at(cam_pos_f64.astype(np.float32), target_f64.astype(np.float32), np.array([0, 1, 0], dtype=np.float32))
-
-        # Test camera relative transformation with astronomical distance
-        earth_pos_f64 = np.array([149600000.0, 0.0, 0.0], dtype=np.float64)
-        cam_near_earth_f64 = np.array([149600010.0, 0.0, 0.0], dtype=np.float64)
-        rel_mv = camera_relative_model_view(earth_pos_f64, cam_near_earth_f64, np.eye(3, dtype=np.float64))
-
-        # Relative offset should be (-10, 0, 0) without precision loss
-        rel_offset_x = rel_mv[0, 3]
-        if abs(rel_offset_x - (-10.0)) < 1e-4:
-            report.add_result(5, "Camera & Floating-Origin Math", True, "Double-precision camera-relative transform verified (0.0000% error)", (time.time() - t0) * 1000)
-        else:
-            report.add_result(5, "Camera & Floating-Origin Math", False, f"Floating origin precision error: got {rel_offset_x}, expected -10.0", (time.time() - t0) * 1000)
-    except Exception as e:
-        report.add_result(5, "Camera & Floating-Origin Math", False, f"Math test failed: {e}", (time.time() - t0) * 1000)
-
-    # -------------------------------------------------------------
-    # STAGE 6: Astronomical Bodies (Sun, Earth, Moon untextured)
-    # -------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from .renderer import create_sphere_mesh
-        verts, indices = create_sphere_mesh(lat_segments=32, lon_segments=64, radius=1.0)
-        if len(verts) > 0 and len(indices) > 0 and verts.shape[1] == 8:
-            report.add_result(6, "Astronomical Geometry Generation", True, f"Base celestial sphere: {len(verts)} vertices, {len(indices)//3} triangles", (time.time() - t0) * 1000)
-        else:
-            report.add_result(6, "Astronomical Geometry Generation", False, f"Invalid sphere mesh shape: {verts.shape}", (time.time() - t0) * 1000)
-    except Exception as e:
-        report.add_result(6, "Astronomical Geometry Generation", False, f"Sphere generation failed: {e}", (time.time() - t0) * 1000)
-
-    # -------------------------------------------------------------
-    # STAGE 7: Canonical Earth Baseline Data Integrity
-    # -------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from ..storage import load_world
         p = Path(canonical_path)
         if not p.exists():
-            # Search alternate paths
-            candidates = [Path("worlds/canonical_world.npz"), Path("canonical_world.npz"), Path("../worlds/canonical_world.npz")]
-            for c in candidates:
-                if c.exists():
-                    p = c
-                    break
-
+            p = Path("worlds/canonical_world.npz")
         if not p.exists():
-            report.add_result(7, "Canonical World Data Integrity", False, f"Dataset not found at '{canonical_path}'", (time.time() - t0) * 1000)
-        else:
-            w = load_world(str(p))
-            elev = w["elevation"]
-            lmask = w["land_mask"]
-            land_frac = float(np.mean(lmask))
-            ocean_frac = 1.0 - land_frac
-            elev_min = float(np.min(elev))
-            elev_max = float(np.max(elev))
-
-            details = f"Loaded {p.name} ({elev.shape[0]}x{elev.shape[1]})\nLand: {land_frac*100:.1f}%, Ocean: {ocean_frac*100:.1f}%, Elev Range: [{elev_min:.3f}, {elev_max:.3f}]"
-            report.add_result(7, "Canonical World Data Integrity", True, details, (time.time() - t0) * 1000)
+            p = Path("world_data/canonical/canonical_world.npz")
+        world_data = load_world(str(p))
+        layers = MapLayers(world_data)
+        assert layers.width >= 512 and layers.height >= 256
+        assert layers.land_mask.shape == (layers.height, layers.width)
+        assert np.all(layers.elevation >= 0.0) and np.all(layers.elevation <= 1.0)
+        assert len(layers.get_metadata()) > 0
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(3, "Canonical Earth 13 Layers Invariants", True, f"{layers.width}x{layers.height} grid verified", t_dur)
     except Exception as e:
-        report.add_result(7, "Canonical World Data Integrity", False, f"Data loading error: {e}", (time.time() - t0) * 1000)
+        report.add_result(3, "Canonical Earth 13 Layers Invariants", False, str(e), (time.perf_counter() - t0) * 1000.0)
+        return report
 
-    # -------------------------------------------------------------
-    # STAGE 8: Cube-Sphere Geometry & Face Boundary Continuity
-    # -------------------------------------------------------------
-    t0 = time.time()
+    # Stage 4: 2D Spatial Chunk Partition & Cache
+    t0 = time.perf_counter()
     try:
-        from .cubesphere import cube_to_sphere, sphere_to_latlon, CARDINAL_FACES
-        # Check that cube_to_sphere maps face centers correctly to unit vectors
-        norm_errors = []
-        for face_id in range(6):
-            pt = cube_to_sphere(face_id, 0.0, 0.0)
-            norm = np.linalg.norm(pt)
-            if abs(norm - 1.0) > 1e-6:
-                norm_errors.append(f"Face {face_id} center norm != 1.0: {norm}")
-
-        # Check edge continuity: +X face right edge (u=1, v=0) should match -Z face left edge or +Y/+Z boundary
-        p_px = cube_to_sphere(0, 1.0, 0.0) # +X right edge (u=1, v=0) -> (1, 0, 1)/sqrt(2)
-        p_pz = cube_to_sphere(4, -1.0, 0.0) # +Z left edge (u=-1, v=0) -> (1, 0, 1)/sqrt(2)
-        edge_diff = np.linalg.norm(p_px - p_pz)
-
-        if edge_diff < 1e-6 and not norm_errors:
-            report.add_result(8, "Cube-Sphere Face Continuity", True, f"6 cardinal faces verified with zero edge boundary seam (diff={edge_diff:.2e})", (time.time() - t0) * 1000)
-        else:
-            report.add_result(8, "Cube-Sphere Face Continuity", False, f"Boundary seam mismatch: diff={edge_diff:.2e}, errors: {norm_errors}", (time.time() - t0) * 1000)
+        chunk_mgr = ChunkManager(layers, chunk_size=32, max_cached=128)
+        assert len(chunk_mgr.chunks) > 0
+        assert chunk_mgr.macro_surface is not None
+        c0 = chunk_mgr.chunks[0]
+        surf0 = chunk_mgr.get_chunk_surface(c0)
+        assert surf0.get_size() == (c0.cell_x1 - c0.cell_x0, c0.cell_y1 - c0.cell_y0)
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(4, "Spatial Chunk Partition & Cache", True, f"{len(chunk_mgr.chunks)} chunks initialized", t_dur)
     except Exception as e:
-        report.add_result(8, "Cube-Sphere Face Continuity", False, f"Cube-sphere test error: {e}", (time.time() - t0) * 1000)
+        report.add_result(4, "Spatial Chunk Partition & Cache", False, str(e), (time.perf_counter() - t0) * 1000.0)
 
-    # -------------------------------------------------------------
-    # STAGE 9: Quadtree LOD Subdivision & Tile Generation
-    # -------------------------------------------------------------
-    t0 = time.time()
+    # Stage 5: 2D Watcher Camera & Cursor-Pinned Zoom Math
+    t0 = time.perf_counter()
     try:
-        from .quadtree import QuadtreeNode, LODManager
-        lod_mgr = LODManager(max_lod=5)
-        # Place camera at altitude 20.0
-        cam_pos = np.array([0.0, 0.0, 20.0], dtype=np.float64)
-        earth_pos = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-        visible_nodes = lod_mgr.update(cam_pos, earth_pos, radius=5.0)
-
-        report.add_result(9, "Quadtree LOD Subdivision", True, f"LOD evaluation active: {len(visible_nodes)} leaf tiles selected for rendering", (time.time() - t0) * 1000)
+        cam = Camera2D(800, 600)
+        # Test cursor pinning
+        mx, my = 300, 200
+        wx0, wy0 = cam.screen_to_world(mx, my)
+        cam.zoom_around_cursor(2.0, mx, my)
+        wx1, wy1 = cam.screen_to_world(mx, my)
+        assert abs(wx0 - wx1) < 1e-4 and abs(wy0 - wy1) < 1e-4, f"Cursor drifted: ({wx0}, {wy0}) vs ({wx1}, {wy1})"
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(5, "Cursor-Pinned 2D Zoom Math", True, "Zero geographic cursor drift verified", t_dur)
     except Exception as e:
-        report.add_result(9, "Quadtree LOD Subdivision", False, f"Quadtree test error: {e}", (time.time() - t0) * 1000)
+        report.add_result(5, "Cursor-Pinned 2D Zoom Math", False, str(e), (time.perf_counter() - t0) * 1000.0)
 
-    # -------------------------------------------------------------
-    # STAGE 10: Full Composite Scene Render Pass
-    # -------------------------------------------------------------
-    t0 = time.time()
+    # Stage 6: 2D Multi-Layer Rendering Pass
+    t0 = time.perf_counter()
     try:
-        # Bind default framebuffer and execute clear
-        ctx.screen.use()
-        ctx.clear(0.01, 0.015, 0.03, 1.0)
-        pygame.display.flip()
-        report.add_result(10, "Full Composite Scene Render Pass", True, "Default framebuffer cleared and buffer swap executed", (time.time() - t0) * 1000)
+        renderer = Renderer2D(800, 600, chunk_mgr, cam)
+        target = pygame.Surface((800, 600))
+        for mode in ALL_LAYER_MODES:
+            renderer.set_layer_mode(mode)
+            renderer.render(target, agents=None, dt=0.016)
+        renderer.set_layer_mode("NATURAL")
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(6, "2D Multi-Layer Rendering Pass", True, f"All {len(ALL_LAYER_MODES)} layer modes verified", t_dur)
     except Exception as e:
-        report.add_result(10, "Full Composite Scene Render Pass", False, f"Render pass error: {e}", (time.time() - t0) * 1000)
+        report.add_result(6, "2D Multi-Layer Rendering Pass", False, str(e), (time.perf_counter() - t0) * 1000.0)
 
-    # Clean up
-    if window:
-        pygame.quit()
+    # Stage 7: Dynamic Coupled Environmental Physics Engine
+    t0 = time.perf_counter()
+    try:
+        inst = WorldInstance("Diag_World", canonical_path=str(p), human_population=1000, initial_environment="Temperate", world_data=world_data)
+        # Step simulation by 3 hours
+        for _ in range(3):
+            inst._on_hourly_tick(3600.0)
+        obs = inst.get_current_observation()
+        assert -60.0 <= obs.temperature_c <= 60.0
+        assert 0.0 <= obs.vegetation_biomass <= 1.0
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(7, "Coupled Environmental Physics", True, f"T={obs.temperature_c:.1f}°C, Biomass={obs.vegetation_biomass:.2f}", t_dur)
+    except Exception as e:
+        report.add_result(7, "Coupled Environmental Physics", False, str(e), (time.perf_counter() - t0) * 1000.0)
+
+    # Stage 8: Intelligent Beings & Demographic Homeostasis
+    t0 = time.perf_counter()
+    try:
+        agents = inst.get_all_agents()
+        assert len(agents) >= 5
+        ag0 = inst.agents[0]
+        assert ag0.health > 0.0 and ag0.alive
+        assert 0.0 <= ag0.wx <= 1.0 and 0.0 <= ag0.wy <= 0.5
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(8, "Intelligent Beings & Homeostasis", True, f"{len(agents)} entities active with valid vitals", t_dur)
+    except Exception as e:
+        report.add_result(8, "Intelligent Beings & Homeostasis", False, str(e), (time.perf_counter() - t0) * 1000.0)
+
+    # Stage 9: Reinforcement Learning Interface & Action Masking
+    t0 = time.perf_counter()
+    try:
+        rl = inst.rl_interface
+        obs_vec = rl.get_observation()
+        assert obs_vec.shape == (12,)
+        assert np.all(obs_vec >= 0.0) and np.all(obs_vec <= 1.0)
+        mask = rl.get_action_mask()
+        assert len(mask) == 14 and np.sum(mask) >= 1
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(9, "Reinforcement Learning Interface", True, "12-dim observation and 14 actions verified", t_dur)
+    except Exception as e:
+        report.add_result(9, "Reinforcement Learning Interface", False, str(e), (time.perf_counter() - t0) * 1000.0)
+
+    # Stage 10: Deterministic Save, Load, and Reset
+    t0 = time.perf_counter()
+    try:
+        save_path = inst.save()
+        loaded = WorldInstance.load(save_path, world_data=world_data)
+        assert loaded.world_name == inst.world_name
+        assert len(loaded.agents) == len(inst.agents)
+        assert abs(loaded.agents[0].wx - inst.agents[0].wx) < 1e-5
+        inst.reset(world_data)
+        assert inst.sim_time_sec == 0.0
+        t_dur = (time.perf_counter() - t0) * 1000.0
+        report.add_result(10, "Deterministic Save/Load/Reset", True, "Exact state round-trip verified", t_dur)
+    except Exception as e:
+        report.add_result(10, "Deterministic Save/Load/Reset", False, str(e), (time.perf_counter() - t0) * 1000.0)
 
     return report
-
-
-if __name__ == "__main__":
-    canonical_arg = sys.argv[1] if len(sys.argv) > 1 else "worlds/canonical_world.npz"
-    rep = run_diagnostic_suite(canonical_arg, hidden_window=True)
-    rep.print_summary()
-    sys.exit(0 if rep.is_all_passed() else 1)

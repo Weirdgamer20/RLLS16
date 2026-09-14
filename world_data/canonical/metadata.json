@@ -1,0 +1,30 @@
+{
+  "magic": "RLLS16-2D-CANONICAL-WORLD",
+  "world_id": "RLLS16_EARTH_CANONICAL_2D",
+  "version": "1.0",
+  "projection": "Equirectangular (Plate Carree)",
+  "resolution": "256x512",
+  "generator_seed": 16001,
+  "storage": "uint16 normalized / uint8 categorical",
+  "source_datasets": [
+    "Natural Earth 110m Physical (Land, Ocean, Coastline, Rivers, Lakes)",
+    "NOAA/NCEI Historical Climate & Insolation",
+    "WWF Terrestrial Ecoregions 14-Biome Classification"
+  ],
+  "layers": [
+    "0: land_mask",
+    "1: elevation",
+    "2: coastline",
+    "3: rivers_lakes",
+    "4: climate",
+    "5: temperature",
+    "6: precipitation",
+    "7: soil_moisture",
+    "8: biome",
+    "9: vegetation",
+    "10: wildlife",
+    "11: resources",
+    "12: agents"
+  ],
+  "checksum": "sha256:25d9eaeefbf8d50be9175d3bc07e5d961d4ffeec30cc84202067b486029b41f0"
+}

@@ -1,13 +1,14 @@
 import json
 import math
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 import numpy as np
 
 from .environment_engine import EnvironmentEngine, LocalEnvironmentObservation
 from .human_population import HumanSettlementCohort
 from .scheduler import MultiRateScheduler
 from .rl_environment import RLLSEnvironmentInterface
+from ..map.layers import MapLayers
 
 
 ENVIRONMENT_TYPES = [
@@ -22,6 +23,37 @@ ENVIRONMENT_TYPES = [
     "Tropical",
     "Temperate",
 ]
+
+
+@dataclass
+class IntelligentAgent:
+    """Individual intelligent being with vitals, cognition, and RL state."""
+    id: int
+    name: str
+    wx: float
+    wy: float
+    latitude_deg: float
+    longitude_deg: float
+    elevation: float
+    biome_id: int
+    age_years: float = 22.0
+    health: float = 100.0
+    energy: float = 88.0
+    hydration: float = 92.0
+    hunger: float = 12.0
+    comfort: float = 85.0
+    alive: bool = True
+    perception_radius: float = 0.05
+    rl_policy: str = "PPO_Survive_v1"
+    memory: list = field(default_factory=list)
+    recent_action: str = "FORAGE_FOOD"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "IntelligentAgent":
+        return cls(**d)
 
 
 @dataclass
@@ -41,7 +73,7 @@ class WorldInstance:
     Coordinates:
       - MultiRateScheduler (1 tick = 1 hour, multi-rate decoupling)
       - EnvironmentEngine (surface energy balance, wind, orographic rain)
-      - HumanSettlementCohort (cognition, homeostasis, cultural lore)
+      - HumanSettlementCohort & Intelligent Agents
       - Immutable reference to canonical Earth dataset
     """
 
@@ -62,11 +94,18 @@ class WorldInstance:
         # 2. User Environmental Forcings (from UI accordions/sliders)
         self.environment = EnvironmentalState()
 
-        # 3. Dynamic Environmental Physics Engine
+        # 3. Dynamic Environmental Physics Engine & 2D Map Layers
+        self.world_data = world_data
         if world_data is not None:
             self.env_engine = EnvironmentEngine(world_data)
+            self.layers = MapLayers(world_data)
         else:
             self.env_engine = None
+            self.layers = None
+
+        # Baseline snapshot for reset
+        self.initial_population = human_population
+        self.initial_env_type = initial_environment
 
         # 4. Human Settlement Deployment
         lat, lon, elev, b_id = self._locate_environment(world_data, initial_environment)
@@ -79,15 +118,13 @@ class WorldInstance:
             biome_id=b_id,
         )
 
-        # Baseline snapshot for reset
-        self.initial_population = human_population
-        self.initial_env_type = initial_environment
-        self.world_data = world_data
+        # 5. Spawn Initial Intelligent Beings
+        self.agents: list[IntelligentAgent] = self._spawn_initial_agents(lat, lon, elev, b_id, count=6)
 
-        # 5. Reinforcement Learning Environment Interface
+        # 6. Reinforcement Learning Environment Interface
         self.rl_interface = RLLSEnvironmentInterface(self, goal_type="Survive")
 
-        # 6. Wire Scheduler Callbacks
+        # 7. Wire Scheduler Callbacks
         self.scheduler.subscribe_hourly(self._on_hourly_tick)
         self.scheduler.subscribe_daily(self._on_daily_tick)
 
@@ -115,8 +152,57 @@ class WorldInstance:
     def is_paused(self, val: bool):
         self.scheduler.is_paused = val
 
+    def _spawn_initial_agents(
+        self,
+        base_lat: float,
+        base_lon: float,
+        base_elev: float,
+        base_biome: int,
+        count: int = 6,
+    ) -> list[IntelligentAgent]:
+        """Spawn the first generation of individual intelligent beings near the settlement."""
+        names = ["Adam", "Eve", "Enki", "Inanna", "Manu", "Noah", "Gilgamesh", "Ishtar"]
+        agents = []
+        for i in range(count):
+            name = names[i % len(names)]
+            # Slight geographic spread around settlement (~0.05 to 0.2 degrees)
+            angle = (2.0 * math.pi / count) * i
+            dist = 0.08 * (0.8 + 0.4 * (i % 3))
+            lat = base_lat + dist * math.cos(angle)
+            lon = base_lon + dist * math.sin(angle)
+
+            wx = (lon + 180.0) / 360.0
+            wy = (90.0 - lat) / 180.0 * 0.5
+
+            agents.append(
+                IntelligentAgent(
+                    id=i + 1,
+                    name=name,
+                    wx=wx,
+                    wy=wy,
+                    latitude_deg=lat,
+                    longitude_deg=lon,
+                    elevation=base_elev,
+                    biome_id=base_biome,
+                    age_years=20.0 + (i * 3.5) % 15.0,
+                    health=100.0,
+                    energy=90.0 - (i * 5.0) % 20.0,
+                    hydration=95.0 - (i * 7.0) % 20.0,
+                    hunger=10.0 + (i * 4.0) % 25.0,
+                    comfort=88.0,
+                    rl_policy="PPO_Survive_v1",
+                    memory=[f"Spawned in {self.initial_env_type} biome"],
+                    recent_action="OBSERVE_ENVIRONMENT",
+                )
+            )
+        return agents
+
+    def get_all_agents(self) -> list:
+        """Returns the settlement cohort followed by all individual intelligent beings."""
+        return [self.human] + self.agents
+
     def _on_hourly_tick(self, sim_time: float):
-        """Execute hourly environmental physics and human physiological metabolism."""
+        """Execute hourly environmental physics and individual agent / settlement metabolism."""
         if self.env_engine is not None:
             self.env_engine.step_hourly(
                 sim_time_sec=sim_time,
@@ -129,12 +215,62 @@ class WorldInstance:
             obs = self.env_engine.get_observation_at(self.human.latitude_deg, self.human.longitude_deg)
             self.human.step_hourly(obs, self.env_engine)
 
+            # Update individual intelligent beings
+            action_pool = ["FORAGE_FOOD", "GATHER_WATER", "EXPLORE", "REST", "SEEK_SHELTER"]
+            for agent in self.agents:
+                if not agent.alive:
+                    continue
+                ag_obs = self.env_engine.get_observation_at(agent.latitude_deg, agent.longitude_deg)
+
+                # Metabolism
+                agent.energy = max(0.0, min(100.0, agent.energy - 0.45))
+                agent.hydration = max(0.0, min(100.0, agent.hydration - 0.60))
+                agent.hunger = max(0.0, min(100.0, agent.hunger + 0.50))
+
+                # Thermal exposure
+                temp_diff = abs(ag_obs.temperature_c - 22.0)
+                agent.comfort = max(0.0, min(100.0, 100.0 - temp_diff * 2.2))
+
+                # Simple autonomous action & vitals recovery
+                chosen_act = action_pool[(agent.id + int(sim_time / 3600.0)) % len(action_pool)]
+                agent.recent_action = chosen_act
+
+                if chosen_act == "FORAGE_FOOD" and ag_obs.vegetation_biomass > 0.2:
+                    agent.hunger = max(0.0, agent.hunger - 15.0)
+                    agent.energy = min(100.0, agent.energy + 8.0)
+                elif chosen_act == "GATHER_WATER" and (ag_obs.soil_moisture > 0.3 or not ag_obs.is_land):
+                    agent.hydration = min(100.0, agent.hydration + 20.0)
+                elif chosen_act == "REST":
+                    agent.energy = min(100.0, agent.energy + 10.0)
+                elif chosen_act == "EXPLORE":
+                    # Slight movement in local area
+                    dlat = (math.sin(agent.id * 1.7 + sim_time * 0.001)) * 0.005
+                    dlon = (math.cos(agent.id * 2.3 + sim_time * 0.001)) * 0.005
+                    agent.latitude_deg += dlat
+                    agent.longitude_deg += dlon
+                    agent.wx = (agent.longitude_deg + 180.0) / 360.0
+                    agent.wy = (90.0 - agent.latitude_deg) / 180.0 * 0.5
+
+                # Health decay if starved or dehydrated
+                if agent.hunger > 90.0 or agent.hydration < 10.0:
+                    agent.health = max(0.0, agent.health - 2.0)
+                elif agent.energy > 50.0 and agent.hydration > 50.0 and agent.health < 100.0:
+                    agent.health = min(100.0, agent.health + 0.5)
+
+                if agent.health <= 0.0:
+                    agent.alive = False
+
     def _on_daily_tick(self):
         """Execute daily environmental hydrology and demographic dynamics."""
         if self.env_engine is not None:
             self.env_engine.step_daily()
             obs = self.env_engine.get_observation_at(self.human.latitude_deg, self.human.longitude_deg)
             self.human.step_daily(obs)
+
+        # Increment age of agents
+        for agent in self.agents:
+            if agent.alive:
+                agent.age_years += 1.0 / 365.0
 
     def get_current_observation(self) -> LocalEnvironmentObservation:
         """Get environmental observation at human settlement coordinates."""
@@ -224,6 +360,7 @@ class WorldInstance:
         self.environment = EnvironmentalState()
         if world_data is not None:
             self.env_engine = EnvironmentEngine(world_data)
+            self.layers = MapLayers(world_data)
 
         lat, lon, elev, b_id = self._locate_environment(world_data, self.initial_env_type)
         self.human = HumanSettlementCohort(
@@ -234,6 +371,7 @@ class WorldInstance:
             elevation=elev,
             biome_id=b_id,
         )
+        self.agents = self._spawn_initial_agents(lat, lon, elev, b_id, count=6)
         self.rl_interface = RLLSEnvironmentInterface(self, goal_type="Survive")
 
     def save(self, base_dir: str = "simulations"):
@@ -249,6 +387,7 @@ class WorldInstance:
             "is_paused": self.is_paused,
             "environment": asdict(self.environment),
             "human": self.human.to_dict(),
+            "agents": [a.to_dict() for a in self.agents],
             "initial_population": self.initial_population,
             "initial_env_type": self.initial_env_type,
         }
@@ -277,4 +416,6 @@ class WorldInstance:
 
         if "human" in data:
             inst.human = HumanSettlementCohort.from_dict(data["human"])
+        if "agents" in data:
+            inst.agents = [IntelligentAgent.from_dict(a) for a in data["agents"]]
         return inst
