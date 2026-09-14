@@ -49,7 +49,7 @@ class RLLS16App:
         if not p.exists():
             p = Path("world_data/canonical/canonical_world.npz")
         if not p.exists():
-            raise FileNotFoundError(f"Canonical world not found at '{canonical_path}'. Please run world_acquisition/generate_canonical_world.py first.")
+            raise FileNotFoundError(f"Canonical world not found at '{canonical_path}'. Please run generate_world.py first.")
 
         self.canonical_path = str(p)
         self.canonical_world = load_world(self.canonical_path)

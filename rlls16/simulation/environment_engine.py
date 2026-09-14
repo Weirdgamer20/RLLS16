@@ -206,15 +206,17 @@ class EnvironmentEngine:
 
         dq_x = np.roll(self.humidity, -1, axis=1) - np.roll(self.humidity, 1, axis=1)
         dq_y = np.roll(self.humidity, -1, axis=0) - np.roll(self.humidity, 1, axis=0)
-        advection = - (self.wind_u_next * dq_x / (2.0 * self.dlon * 111000.0) + \
-                       self.wind_v_next * dq_y / (2.0 * self.dlat * 111000.0))
+        dx_meters = np.maximum(10000.0, 2.0 * self.dlon * 111000.0 * np.maximum(0.2, np.cos(self.lat2d)))
+        dy_meters = max(10000.0, 2.0 * self.dlat * 111000.0)
+        advection = - (self.wind_u_next * dq_x / dx_meters + self.wind_v_next * dq_y / dy_meters)
+        advection = np.clip(advection, -0.000002, 0.000002)
 
         orographic_lift = np.maximum(0.0, self.wind_u_next * self.grad_elev_x + self.wind_v_next * self.grad_elev_y)
         orographic_cooling_effect = orographic_lift * 0.00001
 
-        q_tentative = np.maximum(0.0001, self.humidity + (advection + evaporation) * dt)
+        q_tentative = np.clip(self.humidity + (advection + evaporation) * dt, 0.0001, 0.040)
 
-        relative_humidity = q_tentative / q_sat
+        relative_humidity = np.clip(q_tentative / np.maximum(0.0001, q_sat), 0.0, 2.0)
         excess_q = np.maximum(0.0, q_tentative - q_sat * 0.95) + orographic_cooling_effect
 
         raw_clouds = np.clip((relative_humidity - 0.55) / 0.40, 0.0, 1.0)
@@ -230,7 +232,7 @@ class EnvironmentEngine:
             np.maximum(0.0, self.snow_depth_cm - np.maximum(0.0, self.temp_next) * 0.08)
         )
 
-        self.humidity_next[:] = np.maximum(0.0002, q_tentative - excess_q * 0.75)
+        self.humidity_next[:] = np.clip(q_tentative - excess_q * 0.75, 0.0002, 0.035)
 
         # 8. Swap Buffers
         self.temp[:] = self.temp_next

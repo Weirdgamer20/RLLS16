@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RLLS 16 — 3D Artificial-World Simulation System
+RLLS 16 — Canonical 2D Earth Observation & Life Simulation Platform
 Desktop Application Entry Point
 """
 
@@ -17,10 +17,10 @@ from rlls16.preview import preview
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RLLS 16 — 3D Artificial-World Simulation System")
-    parser.add_argument("--diagnostic", action="store_true", help="Run 10-stage graphics and data pipeline diagnostic suite")
+    parser = argparse.ArgumentParser(description="RLLS 16 — Canonical 2D Earth Observation & Life Simulation Platform")
+    parser.add_argument("--diagnostic", action="store_true", help="Run 10-stage 2D Earth and simulation diagnostic suite")
     parser.add_argument("--headless-diagnostic", action="store_true", help="Run 10-stage diagnostic suite headlessly and exit")
-    parser.add_argument("--preview", type=str, nargs="?", const="worlds/canonical_world", help="Launch direct 3D planetary preview")
+    parser.add_argument("--preview", type=str, nargs="?", const="worlds/canonical_world", help="Launch direct 2D watcher map preview")
     parser.add_argument("--world", type=str, default="worlds/canonical_world.npz", help="Path to canonical world dataset")
 
     args = parser.parse_args()

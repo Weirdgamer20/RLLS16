@@ -536,15 +536,17 @@ class SimulationHUD:
             sim_speed_str = "PAUSED"
 
         num_agents = len(world_instance.agents) if hasattr(world_instance, "agents") else 1
+        rnd_ms = renderer.telemetry["render_ms"] if renderer and hasattr(renderer, "telemetry") else 0.0
+        lod_id = renderer.telemetry["lod"] if renderer and hasattr(renderer, "telemetry") else 0
         status_text = (
             f"DAY {day_num:03d}   |   "
             f"{obs.temperature_c:+.1f}°C   |   "
-            f"Humidity {humidity_pct}%   |   "
             f"Wind {obs.wind_speed:.1f} m/s   |   "
             f"Rain {rain_str}   |   "
-            f"Population {human.population:,}   |   "
-            f"Intelligent Beings {num_agents}   |   "
-            f"FPS {fps:.0f} [TARGET 120]   |   "
+            f"Pop {human.population:,}   |   "
+            f"FPS {fps:.0f}   |   "
+            f"RND {rnd_ms:.1f}ms   |   "
+            f"LOD {lod_id}   |   "
             f"SIM {sim_speed_str}"
         )
         surface.blit(f_small.render(status_text, True, TEXT_PRIMARY), (16, self.height - 20))
@@ -660,12 +662,17 @@ class SimulationHUD:
 
                     mask = inst.rl_interface.get_action_mask()
                     valid_actions = int(np.sum(mask))
+                    rl_telem = inst.rl_interface.get_learning_telemetry() if hasattr(inst.rl_interface, "get_learning_telemetry") else {}
 
                     lines = [
                         ("Observation", "12-dim Normalized"),
                         ("Action Space", f"14 Discrete ({valid_actions} Valid)"),
-                        ("Policy", "PPO_Survive_v1"),
-                        ("Reward Model", "Homeostatic Survival"),
+                        ("Policy Updates", f"{rl_telem.get('policy_updates', 0):,} updates"),
+                        ("Q-Table States", f"{rl_telem.get('q_table_states', 0)} visited"),
+                        ("Avg TD Error", f"{rl_telem.get('avg_td_error', 0.0):.4f}"),
+                        ("Last Action", f"{rl_telem.get('last_action', 'NONE')}"),
+                        ("Last Reward", f"{rl_telem.get('last_reward', 0.0):+.2f}"),
+                        ("Epsilon", f"{rl_telem.get('epsilon', 0.05):.2f}"),
                     ]
                     for label, val in lines:
                         surface.blit(f_small.render(label, True, TEXT_MUTED), (panel_x + 16, content_y))
@@ -742,28 +749,32 @@ class SimulationHUD:
     def _render_info_card(self, surface: pygame.Surface, inst, camera, fps: float, renderer=None):
         """Floating inspection overlay card."""
         f_title, f_header, f_body, f_small = self.fonts
-        card_w, card_h = 300, 240
+        card_w, card_h = 320, 290
         card_rect = pygame.Rect(self.width - card_w - 76, 56, card_w, card_h)
 
         draw_panel(surface, card_rect, border_color=ACCENT_CYAN, fill_color=(8, 16, 32, 245))
 
-        hdr = f_header.render("WORLD INSPECTION", True, ACCENT_CYAN)
+        hdr = f_header.render("WORLD INSPECTION & PROFILING", True, ACCENT_CYAN)
         surface.blit(hdr, (card_rect.x + 16, card_rect.y + 12))
         pygame.draw.line(surface, PANEL_BORDER, (card_rect.x + 16, card_rect.y + 36), (card_rect.right - 16, card_rect.y + 36), 1)
 
+        telem = renderer.telemetry if renderer and hasattr(renderer, "telemetry") else {}
         lines = [
             ("World Name", inst.world_name),
-            ("Zoom Tier", f"{camera.zoom_tier} ({camera.zoom:.1f}x)"),
+            ("Hierarchical LOD", telem.get("lod_name", camera.zoom_tier)),
+            ("Zoom Factor", f"{camera.zoom:.2f}x"),
             ("Active Layer", renderer.current_layer_mode if renderer else "NATURAL"),
-            ("Habitat", inst.human.environment_type),
-            ("Latitude", f"{inst.human.latitude_deg:.2f}°N"),
-            ("Longitude", f"{inst.human.longitude_deg:.2f}°E"),
+            ("Render Time", f"{telem.get('render_ms', 0.0):.2f} ms"),
+            ("Cache Hit Rate", f"{telem.get('cache_hit_rate', 100.0):.1f}%"),
+            ("Tiles Vis / Bld", f"{telem.get('visible_chunks', 0)} vis / {telem.get('chunk_rebuilds', 0)} bld"),
+            ("Cached Surfaces", f"{telem.get('cached_chunks', 0)} tiles"),
             ("FPS / Target", f"{fps:.0f} / 120 FPS"),
+            ("Latitude/Lon", f"{inst.human.latitude_deg:.2f}°N, {inst.human.longitude_deg:.2f}°E"),
             ("Engine", "2D Orthographic Watcher"),
         ]
 
         cy = card_rect.y + 44
         for label, val in lines:
             surface.blit(f_small.render(label, True, TEXT_MUTED), (card_rect.x + 16, cy))
-            surface.blit(f_small.render(val, True, TEXT_PRIMARY), (card_rect.x + 130, cy))
+            surface.blit(f_small.render(val, True, TEXT_PRIMARY), (card_rect.x + 140, cy))
             cy += 20

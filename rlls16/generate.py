@@ -1,6 +1,5 @@
 """
-RLLS 16 — Canonical 2D Earth World Generator Entry Point.
-Coordinates the offline real Earth data pipeline, layer building, validation, and serialization.
+RLLS 16 — Canonical 2D Earth Generator Module Interface.
 """
 
 from pathlib import Path
@@ -16,12 +15,12 @@ def run(cfg: GeneratorConfig | None = None):
     h = cfg.lat_samples if hasattr(cfg, "lat_samples") else 256
     s = cfg.seed if hasattr(cfg, "seed") else 16001
 
-    pkg_root = Path(__file__).parent.parent
+    pkg_root = Path(__file__).resolve().parent.parent
     raw_dir = pkg_root / "world_data" / "raw"
     canonical_dir = pkg_root / "world_data" / "canonical"
     worlds_dir = pkg_root / "worlds"
 
-    run_pipeline(
+    return run_pipeline(
         width=w,
         height=h,
         seed=s,

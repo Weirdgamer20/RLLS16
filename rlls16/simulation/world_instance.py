@@ -260,6 +260,10 @@ class WorldInstance:
                 if agent.health <= 0.0:
                     agent.alive = False
 
+            # Active closed-loop Reinforcement Learning policy update
+            if hasattr(self, "rl_interface") and self.rl_interface is not None:
+                self.rl_interface.step_and_learn(advance_world_clock=False)
+
     def _on_daily_tick(self):
         """Execute daily environmental hydrology and demographic dynamics."""
         if self.env_engine is not None:

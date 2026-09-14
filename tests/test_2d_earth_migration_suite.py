@@ -322,6 +322,77 @@ def test_11_performance_budget_and_120fps(canonical_world, map_layers):
     assert avg_ms < 8.33, f"Average render time {avg_ms:.2f}ms exceeds 8.33ms 120 FPS budget!"
 
 
+def test_12_active_rl_learning_loop(canonical_world):
+    """Verify the active closed-loop RL cycle: obs -> policy -> action -> env -> reward -> next_obs -> policy update."""
+    world = WorldInstance("RL_Test_World", world_data=canonical_world)
+    rl = world.rl_interface
+
+    initial_updates = rl.agent.policy_updates
+    assert initial_updates == 0
+
+    # Run 25 closed-loop learning iterations
+    for _ in range(25):
+        transition = rl.step_and_learn()
+        assert "state" in transition
+        assert "action_name" in transition
+        assert "reward" in transition
+        assert "td_error" in transition
+
+    telemetry = rl.get_learning_telemetry()
+    assert telemetry["policy_updates"] == 25
+    assert telemetry["q_table_states"] > 0
+    assert len(rl.agent.td_error_history) == 25
+    assert telemetry["epsilon"] < 0.30  # Verified epsilon decay
+
+
+def test_13_resolution_specific_surface_cache(map_layers):
+    """Verify resolution-specific cached surfaces reuse tiles during camera movement without scaling."""
+    chunk_mgr = ChunkManager(map_layers, chunk_size=32)
+    cam = Camera2D(1280, 768)
+    cam.zoom = 4.0  # Continental LOD 1
+    renderer = Renderer2D(1280, 768, chunk_mgr, cam)
+    target_surf = pygame.Surface((1280, 768))
+
+    # Initial frame warm up (populates cache)
+    renderer.render(target_surf, dt=0.016)
+
+    # Subsequent pan frames: move camera center slightly (zoom stays 4.0)
+    for i in range(15):
+        cam.center_x = 0.50 + (i * 0.002)
+        renderer.render(target_surf, dt=0.016)
+
+    stats = chunk_mgr.cache_stats
+    assert stats["cache_hits"] > 0
+    # Over a pan sequence at fixed zoom, hit rate should be exceptionally high (> 85%)
+    assert stats["hit_rate"] >= 85.0, f"Cache hit rate was only {stats['hit_rate']:.1f}%"
+
+
+def test_14_5_tier_hierarchical_lod(map_layers):
+    """Verify 5-tier hierarchical LOD mapping across all zoom levels."""
+    from rlls16.map.chunk_tile import (
+        get_lod_for_zoom,
+        LOD_0_GLOBAL, LOD_1_CONTINENT, LOD_2_REGIONAL, LOD_3_LOCAL, LOD_4_GROUND
+    )
+    assert get_lod_for_zoom(1.0) == LOD_0_GLOBAL
+    assert get_lod_for_zoom(3.0) == LOD_1_CONTINENT
+    assert get_lod_for_zoom(10.0) == LOD_2_REGIONAL
+    assert get_lod_for_zoom(30.0) == LOD_3_LOCAL
+    assert get_lod_for_zoom(80.0) == LOD_4_GROUND
+
+
+def test_15_spatial_object_partitioning(map_layers):
+    """Verify O(K) spatial object retrieval for trees, animals, and water nodes."""
+    from rlls16.map.spatial_objects import SpatialObjectManager
+    som = SpatialObjectManager(map_layers)
+    assert som.total_objects > 0
+
+    # Query bounding box
+    objs = som.get_objects_in_world_rect(0.2, 0.1, 0.4, 0.3)
+    assert len(objs) > 0
+    types = {o.obj_type for o in objs}
+    assert "tree" in types or "animal" in types or "water" in types
+
+
 if __name__ == "__main__":
     import tempfile
     pygame.init()
@@ -345,6 +416,10 @@ if __name__ == "__main__":
         ("09 UI Mouse Wheel Isolation", test_09_ui_mouse_wheel_isolation),
         ("10 Deterministic Save/Load/Reset", lambda: test_10_deterministic_save_load_reset(cw, Path(tempfile.mkdtemp()))),
         ("11 120 FPS Performance Budget", lambda: test_11_performance_budget_and_120fps(cw, layers)),
+        ("12 Active RL Learning Loop", lambda: test_12_active_rl_learning_loop(cw)),
+        ("13 Resolution-Specific Surface Cache", lambda: test_13_resolution_specific_surface_cache(layers)),
+        ("14 5-Tier Hierarchical LOD", lambda: test_14_5_tier_hierarchical_lod(layers)),
+        ("15 Spatial Object Partitioning", lambda: test_15_spatial_object_partitioning(layers)),
     ]
 
     print("\n" + "=" * 70)
@@ -364,7 +439,7 @@ if __name__ == "__main__":
 
     print("=" * 70)
     if all_ok:
-        print(" ALL 11 TEST SUITES PASSED SUCCESSFULLY!")
+        print(" ALL 15 TEST SUITES PASSED SUCCESSFULLY!")
     else:
         print(" SOME TESTS FAILED!")
     print("=" * 70 + "\n")
